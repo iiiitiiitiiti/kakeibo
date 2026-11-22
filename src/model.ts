@@ -20,6 +20,8 @@ export interface Entry {
   memo: string;
   addedBy: string;
   createdAt: number;
+  /** まだ保存先に届いていない（電波が無い所で書いた） */
+  pending?: boolean;
 }
 
 export interface Category {
@@ -46,7 +48,7 @@ export const DEFAULT_CATEGORIES: readonly Category[] = [
   { id: "daily", name: "日用品", order: 20, hidden: false },
   { id: "eatout", name: "外食", order: 30, hidden: false },
   { id: "rent", name: "家賃", order: 40, hidden: false },
-  { id: "utility", name: "光熱費", order: 50, hidden: false },
+  { id: "utility", name: "水道・光熱費", order: 50, hidden: false },
   { id: "phone", name: "通信", order: 60, hidden: false },
   { id: OTHER_ID, name: "その他", order: 1000, hidden: false },
 ];
@@ -141,6 +143,48 @@ export function totalsByCategory(entries: readonly Entry[], cats: readonly Categ
 
 export const sum = (entries: readonly Entry[]): number => entries.reduce((n, e) => n + e.amount, 0);
 
+export interface Pace {
+  /** 今日を含めた月末までの日数 */
+  daysLeft: number;
+  /** 残りを日数で割った、1日に使える額（円未満は切り捨て。残りが無ければ 0） */
+  perDay: number;
+}
+
+/** 今見ている月が今月のときの、月末までの日数と1日に使える額。今月でなければ null */
+export function paceFor(month: string, today: string, left: number): Pace | null {
+  if (monthOf(today) !== month) return null;
+  const [y, m] = month.split("-").map(Number);
+  const daysLeft = new Date(y, m, 0).getDate() - Number(today.slice(8)) + 1;
+  return { daysLeft, perDay: left > 0 ? Math.floor(left / daysLeft) : 0 };
+}
+
+/** そのカテゴリで前に書いたメモ（新しい順・同じものは1つ・n 件まで）。メモを打つときの候補に出す */
+export function memoSuggestions(entries: readonly Entry[], categoryId: string | null, n = 8): string[] {
+  const seen = new Set<string>();
+  const sorted = [...entries].sort((a, b) => b.createdAt - a.createdAt);
+  for (const e of sorted) {
+    if (seen.size >= n) break;
+    if (e.memo && (categoryId === null || e.categoryId === categoryId)) seen.add(e.memo);
+  }
+  return [...seen];
+}
+
+/** パソコンのキーボードのキーを電卓のキーに読み替える。関係ないキーは null */
+export function calcKeyFromKeyboard(key: string): CalcKey | null {
+  if (/^[0-9]$/.test(key)) return key as CalcKey;
+  const map: Record<string, CalcKey> = {
+    "+": "+",
+    "-": "−",
+    "*": "×",
+    "/": "÷",
+    "=": "=",
+    Backspace: "back",
+    Delete: "C",
+    Escape: "C",
+  };
+  return map[key] ?? null;
+}
+
 export interface EntryDay {
   date: string;
   total: number;
@@ -169,16 +213,18 @@ export const yen = (n: number): string => `${n < 0 ? "−" : ""}¥${yenFmt.forma
 
 const WEEK = ["日", "月", "火", "水", "木", "金", "土"];
 
-/** 「11月22日(日)」。今日・昨日は言葉で */
+/** 「11月22日(日)」。今年でなければ頭に年を付ける */
 export function dateLabel(date: string, today: string = localDate()): string {
-  if (date === today) return "今日";
   const [y, m, d] = date.split("-").map(Number);
-  const t = new Date(y, m - 1, d);
-  const yest = new Date();
-  yest.setDate(yest.getDate() - 1);
-  if (date === localDate(yest) && today === localDate()) return "昨日";
   const head = String(y) === today.slice(0, 4) ? "" : `${y}年`;
-  return `${head}${m}月${d}日(${WEEK[t.getDay()]})`;
+  return `${head}${m}月${d}日(${WEEK[new Date(y, m - 1, d).getDay()]})`;
+}
+
+/** 幅の狭い所に出す「11/22(日)」。今年でなければ「2025/12/31」 */
+export function dateShort(date: string, today: string = localDate()): string {
+  const [y, m, d] = date.split("-").map(Number);
+  if (String(y) !== today.slice(0, 4)) return `${y}/${m}/${d}`;
+  return `${m}/${d}(${WEEK[new Date(y, m - 1, d).getDay()]})`;
 }
 
 export const monthLabel = (month: string): string => {

@@ -1,4 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  Component,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import {
   addMonths,
   AMOUNT_MAX,
@@ -9,15 +20,19 @@ import {
   categoryOf,
   cleanText,
   dateLabel,
+  dateShort,
   DEFAULT_CATEGORIES,
   groupByDate,
   keyFromHash,
   localDate,
   MEMO_MAX,
+  memoSuggestions,
   monthLabel,
   monthOf,
   nextOrder,
+  paceFor,
   PERSON_MAX,
+  calcKeyFromKeyboard,
   calcPress,
   evaluate,
   formatExpr,
@@ -37,6 +52,22 @@ import { useBook, type NewEntry } from "./useBook";
 // かいもの（同じ github.io の上）と保存場所を分けるため、名前は kakeibo: で始める
 const STORE_KEY = "kakeibo:key";
 const STORE_ME = "kakeibo:me";
+/** 明るい・暗いの選択。開いた瞬間に効かせるため、public/theme.js も同じ名前で読む */
+const STORE_THEME = "kakeibo:theme";
+const THEME_COLOR = { light: "#F8F7F3", dark: "#14181B" } as const;
+type Theme = keyof typeof THEME_COLOR;
+
+const currentTheme = (): Theme => (document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+
+function applyTheme(theme: Theme) {
+  const root = document.documentElement;
+  // 切り替えの間だけ色をなめらかに変える
+  root.classList.add("theme-switching");
+  window.setTimeout(() => root.classList.remove("theme-switching"), 400);
+  if (theme === "dark") root.dataset.theme = "dark";
+  else delete root.dataset.theme;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", THEME_COLOR[theme]);
+}
 
 const read = (k: string): string | null => {
   try {
@@ -71,7 +102,85 @@ function loadKey(): string | null {
   return null;
 }
 
+/** 画面のどこかで失敗しても真っ白にせず、開き直す手段を出す */
+class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(e: unknown) {
+    console.error("画面を出せませんでした", e);
+  }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <main className="center-screen">
+        <Logo />
+        <h1>うまく表示できませんでした</h1>
+        <p>開き直すと直ることがあります。これまでの記録は消えていません。</p>
+        <button className="btn primary" type="button" onClick={() => window.location.reload()}>
+          開き直す
+        </button>
+      </main>
+    );
+  }
+}
+
 export function App() {
+  return (
+    <ErrorBoundary>
+      <Root />
+    </ErrorBoundary>
+  );
+}
+
+/**
+ * 今日の日付。開いたまま日をまたいでも付いていく。
+ * 一度決めた値のままだと、翌日に開き直したときに前の日付で記録してしまう。
+ */
+function useToday(): string {
+  const [today, setToday] = useState(localDate);
+  useEffect(() => {
+    const check = () => setToday(localDate());
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    const timer = window.setInterval(check, 30000);
+    return () => {
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("focus", check);
+      window.clearInterval(timer);
+    };
+  }, []);
+  return today;
+}
+
+const CLOCK_SLACK_MS = 5 * 60 * 1000;
+
+/** 開いている間に新しく届いた記録の ID（相手が書いた分も含む）。少しの間だけ色を付けるのに使う */
+function useArrivals(entries: readonly Entry[], synced: boolean): ReadonlySet<string> {
+  const seen = useRef(new Set<string>());
+  /** 数え始めた時刻。それまでは 0 */
+  const armedAt = useRef(0);
+  const [fresh, setFresh] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    const added = entries.filter((e) => !seen.current.has(e.id));
+    for (const e of added) seen.current.add(e.id);
+    // 開いた直後にまとめて届く分は数えない。1件消えて繰り上がってきた古い記録も数えない
+    // （端末どうしの時計のずれを見込んで、数え始めの少し前までは新しい記録として扱う）
+    const since = armedAt.current - CLOCK_SLACK_MS;
+    const arrived = armedAt.current ? added.filter((e) => e.createdAt > since) : [];
+    if (arrived.length) setFresh(new Set(arrived.map((e) => e.id)));
+    if (synced && !armedAt.current) armedAt.current = Date.now();
+  }, [entries, synced]);
+  useEffect(() => {
+    if (fresh.size === 0) return;
+    const t = window.setTimeout(() => setFresh(new Set()), 2000);
+    return () => window.clearTimeout(t);
+  }, [fresh]);
+  return fresh;
+}
+
+function Root() {
   const [bookKey, setBookKey] = useState<string | null>(loadKey);
   const [me, setMe] = useState<string | null>(() => read(STORE_ME));
 
@@ -101,7 +210,8 @@ export function App() {
 
   if (!bookKey) return <NoKey onKey={useLink} />;
   if (me === null) return <NameSetup onDone={saveMe} />;
-  return <BookScreen bookKey={bookKey} me={me} onMe={saveMe} onKey={useLink} />;
+  // 別の家計簿のリンクに替わったら、画面の状態（届いた記録の覚えなど）を作り直す
+  return <BookScreen key={bookKey} bookKey={bookKey} me={me} onMe={saveMe} onKey={useLink} />;
 }
 
 /* ---------- 鍵が無いとき・呼び名 ---------- */
@@ -178,6 +288,8 @@ function NameSetup({ onDone }: { onDone: (name: string) => void }) {
 interface ToastState {
   id: number;
   message: string;
+  /** 2行目に小さく出す補足 */
+  sub?: string;
   action?: { label: string; run: () => void };
 }
 
@@ -200,21 +312,64 @@ function BookScreen({
   onMe: (v: string) => void;
   onKey: (k: string) => void;
 }) {
+  const today = useToday();
+  const thisMonth = monthOf(today);
   const [tab, setTab] = useState<Tab>("record");
-  const [month, setMonth] = useState(() => monthOf(localDate()));
+  // 今月以外を見ているときだけ持つ。持っていなければ今月（月が変わっても付いていく）
+  const [pickedMonth, setPickedMonth] = useState<string | null>(null);
+  const month = pickedMonth ?? thisMonth;
   const [dialog, setDialog] = useState<DialogState>(null);
+  // 閉じるときは下へ引っ込む動きを見せてから外す
+  const [closing, setClosing] = useState(false);
+  const opener = useRef<HTMLElement | null>(null);
+  const openDialog = (d: NonNullable<DialogState>) => {
+    // 別の画面から続けて開いたときも、最初に押した場所を覚えておく
+    if (!dialog) opener.current = document.activeElement as HTMLElement | null;
+    setClosing(false);
+    setDialog(d);
+  };
+  const closeDialog = useCallback(() => setClosing(true), []);
+  const dialogCtx = useMemo(
+    () => ({
+      closing,
+      onClosed: () => {
+        setClosing(false);
+        setDialog(null);
+      },
+    }),
+    [closing],
+  );
+  // 閉じ終わって画面から外れたあとに、開く前に押した場所へ戻す（開いている間は外へ移れない）
+  useEffect(() => {
+    if (dialog) return;
+    const el = opener.current;
+    opener.current = null;
+    if (el && document.contains(el)) el.focus({ preventScroll: true });
+  }, [dialog]);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [flashId, setFlashId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!flashId) return;
+    // 色を付け終えたら外す（残すと、画面を切り替えるたびに同じ行が光り直す）
+    const t = window.setTimeout(() => setFlashId(null), 2000);
+    return () => window.clearTimeout(t);
+  }, [flashId]);
+  // 画面を切り替えたときに、進んだ向きから入ってくるように見せる
+  const [enter, setEnter] = useState<"" | "from-left" | "from-right">("");
 
-  const showToast = useCallback((message: string, action?: ToastState["action"]) => {
-    setToast({ id: Date.now(), message, action });
+  const showToast = useCallback((message: string, action?: ToastState["action"], sub?: string) => {
+    setToast({ id: Date.now(), message, sub, action });
   }, []);
+  const clearToast = useCallback(() => setToast(null), []);
   const onWriteError = useCallback(() => showToast("保存できませんでした。電波のよい所でもう一度試してください"), [showToast]);
 
   const book = useBook(bookKey, month, me, onWriteError);
   const { categories } = book;
   const visible = useMemo(() => categories.filter((c) => !c.hidden), [categories]);
   const colorOf = useCallback((id: string) => colorClass(categoryOf(id, categories).id), [categories]);
+  const arrivals = useArrivals(book.recent, book.synced);
+  const isFresh = (id: string) => id === flashId || arrivals.has(id);
+  const budget = budgetFor(month, book.budgets);
 
   if (book.state === "denied") return <NoKey onKey={onKey} denied />;
 
@@ -231,7 +386,17 @@ function BookScreen({
           <span>かけいぼ</span>
         </div>
         <nav className="tabs" aria-label="画面">
-          <button type="button" className={tab === "record" ? "on" : ""} aria-pressed={tab === "record"} onClick={() => setTab("record")}>
+          <button
+            type="button"
+            className={tab === "record" ? "on" : ""}
+            aria-pressed={tab === "record"}
+            onClick={() => {
+              // 記録画面では今月の合計を追う（記録した直後に今月の残りを知らせるため）
+              setPickedMonth(null);
+              if (tab !== "record") setEnter("from-left");
+              setTab("record");
+            }}
+          >
             記録
           </button>
           <button
@@ -239,14 +404,15 @@ function BookScreen({
             className={tab === "month" ? "on" : ""}
             aria-pressed={tab === "month"}
             onClick={() => {
-              setMonth(monthOf(localDate()));
+              setPickedMonth(null);
+              if (tab !== "month") setEnter("from-right");
               setTab("month");
             }}
           >
             今月
           </button>
         </nav>
-        <button className="icon-btn" type="button" aria-label="メニュー" onClick={() => setDialog({ kind: "menu" })}>
+        <button className="icon-btn" type="button" aria-label="メニュー" onClick={() => openDialog({ kind: "menu" })}>
           <MenuIcon />
         </button>
       </header>
@@ -262,83 +428,99 @@ function BookScreen({
           categories={visible}
           allCategories={categories}
           recent={book.recent}
+          memoSource={book.monthEntries}
+          loading={book.state === "loading"}
+          today={today}
+          enter={enter}
           colorOf={colorOf}
-          flashId={flashId}
+          isFresh={isFresh}
           onAdd={(e) => {
+            // 今月の残りは、この記録が合計に入る前の値から引いて出す
+            const left =
+              budget !== null && book.monthReady && month === thisMonth && monthOf(e.date) === thisMonth
+                ? budget - sum(book.monthEntries) - e.amount
+                : null;
             const id = book.add(e);
             setFlashId(id);
             const cat = categoryOf(e.categoryId, categories);
-            showToast(`${cat.name} ${yen(e.amount)} を記録しました`, {
-              label: "取り消す",
-              run: () => book.remove(id),
-            });
+            showToast(
+              `${cat.name} ${yen(e.amount)} を記録`,
+              { label: "取り消す", run: () => book.remove(id) },
+              left === null ? undefined : left >= 0 ? `今月の残り ${yen(left)}` : `今月の予算を ${yen(-left)} 超えています`,
+            );
           }}
-          onOpen={(entry) => setDialog({ kind: "edit", entry })}
-          onEditCategories={() => setDialog({ kind: "categories" })}
+          onOpen={(entry) => openDialog({ kind: "edit", entry })}
+          onEditCategories={() => openDialog({ kind: "categories" })}
         />
       ) : (
         <MonthTab
           month={month}
-          onMonth={setMonth}
+          onMonth={(m) => setPickedMonth(m === thisMonth ? null : m)}
+          today={today}
+          enter={enter}
+          ready={book.monthReady}
           entries={book.monthEntries}
           categories={categories}
-          budget={budgetFor(month, book.budgets)}
+          budget={budget}
           colorOf={colorOf}
-          onOpen={(entry) => setDialog({ kind: "edit", entry })}
-          onBudget={() => setDialog({ kind: "budget" })}
+          isFresh={isFresh}
+          onOpen={(entry) => openDialog({ kind: "edit", entry })}
+          onBudget={() => openDialog({ kind: "budget" })}
         />
       )}
 
-      {dialog?.kind === "edit" && (
-        <EditDialog
-          entry={dialog.entry}
-          categories={categories}
-          onClose={() => setDialog(null)}
-          onSave={(e) => {
-            book.update(dialog.entry.id, e);
-            setDialog(null);
-            showToast("直しました");
-          }}
-          onDelete={() => {
-            removeEntry(dialog.entry);
-            setDialog(null);
-          }}
-        />
-      )}
-      {dialog?.kind === "menu" && (
-        <MenuDialog
-          me={me}
-          onMe={onMe}
-          onClose={() => setDialog(null)}
-          onToast={showToast}
-          onBudget={() => setDialog({ kind: "budget" })}
-          onCategories={() => setDialog({ kind: "categories" })}
-        />
-      )}
-      {dialog?.kind === "budget" && (
-        <BudgetDialog
-          month={monthOf(localDate())}
-          current={budgetFor(monthOf(localDate()), book.budgets)}
-          onClose={() => setDialog(null)}
-          onSave={(amount) => {
-            book.setBudget(monthOf(localDate()), amount);
-            setDialog(null);
-            showToast(amount > 0 ? `予算を ${yen(amount)} にしました` : "予算を決めない設定にしました");
-          }}
-        />
-      )}
-      {dialog?.kind === "categories" && (
-        <CategoryDialog
-          categories={categories}
-          colorOf={colorOf}
-          onClose={() => setDialog(null)}
-          onSave={book.saveCategory}
-          onSwap={book.swapCategories}
-          onAdd={(name) => book.addCategory(name, nextOrder(categories))}
-        />
-      )}
+      <DialogContext.Provider value={dialogCtx}>
+        {dialog?.kind === "edit" && (
+          <EditDialog
+            entry={dialog.entry}
+            categories={categories}
+            onClose={() => closeDialog()}
+            onSave={(e) => {
+              book.update(dialog.entry.id, e);
+              closeDialog();
+              showToast("直しました");
+            }}
+            onDelete={() => {
+              removeEntry(dialog.entry);
+              closeDialog();
+            }}
+          />
+        )}
+        {dialog?.kind === "menu" && (
+          <MenuDialog
+            me={me}
+            onMe={onMe}
+            onClose={() => closeDialog()}
+            onToast={showToast}
+            onBudget={() => openDialog({ kind: "budget" })}
+            onCategories={() => openDialog({ kind: "categories" })}
+          />
+        )}
+        {dialog?.kind === "budget" && (
+          <BudgetDialog
+            month={thisMonth}
+            current={budgetFor(thisMonth, book.budgets)}
+            onClose={() => closeDialog()}
+            onSave={(amount) => {
+              book.setBudget(thisMonth, amount);
+              closeDialog();
+              showToast(amount > 0 ? `予算を ${yen(amount)} にしました` : "予算を決めない設定にしました");
+            }}
+          />
+        )}
+        {dialog?.kind === "categories" && (
+          <CategoryDialog
+            categories={categories}
+            colorOf={colorOf}
+            onClose={() => closeDialog()}
+            onSave={book.saveCategory}
+            onSwap={book.swapCategories}
+            onAdd={(name) => book.addCategory(name, nextOrder(categories))}
+          />
+        )}
+      </DialogContext.Provider>
 
-      {toast && <Toast key={toast.id} toast={toast} onDone={() => setToast(null)} />}
+      {toast && <Toast key={toast.id} toast={toast} onDone={clearToast} />}
     </div>
   );
 }
@@ -374,12 +556,19 @@ function keyClass(k: CalcKey): string {
   return "key";
 }
 
+/** プルダウンの最後に置く「カテゴリを足す・直す」の値（カテゴリの ID とは重ならない） */
+const EDIT_CATEGORIES = "__edit__";
+
 function RecordTab({
   categories,
   allCategories,
   recent,
+  memoSource,
+  loading,
+  today,
+  enter,
   colorOf,
-  flashId,
+  isFresh,
   onAdd,
   onOpen,
   onEditCategories,
@@ -387,15 +576,27 @@ function RecordTab({
   categories: Category[];
   allCategories: Category[];
   recent: Entry[];
+  memoSource: Entry[];
+  loading: boolean;
+  today: string;
+  enter: string;
   colorOf: (id: string) => string;
-  flashId: string | null;
+  isFresh: (id: string) => boolean;
   onAdd: (e: NewEntry) => void;
   onOpen: (e: Entry) => void;
   onEditCategories: () => void;
 }) {
   const [expr, setExpr] = useState("");
   const [catId, setCatId] = useState<string | null>(null);
-  const [date, setDate] = useState(localDate);
+  // 自分で選んだ日付だけ持つ。選んでいなければ今日（日をまたいでも付いていく）。
+  // 選んだ日付はその日のうちだけ有効にする。開いたまま何日もたってから、前に選んだ日付で記録してしまわないように
+  const [picked, setPicked] = useState<{ date: string; on: string } | null>(null);
+  const date = picked && picked.on === today ? picked.date : today;
+  const pickDate = (v: string) => {
+    // 端末の日付選びが上限を守らなくても、先の日付は受け取らない
+    if (!v || v > today) return;
+    setPicked(v === today ? null : { date: v, on: today });
+  };
   const [memo, setMemo] = useState("");
   const value = evaluate(expr);
   const amount = value ?? 0;
@@ -404,18 +605,39 @@ function RecordTab({
   const chosen = catId && categories.some((c) => c.id === catId) ? catId : null;
   const ready = amountOk && chosen !== null;
 
+  const suggestions = useMemo(
+    () => memoSuggestions([...recent, ...memoSource], chosen),
+    [recent, memoSource, chosen],
+  );
+
   const press = (key: CalcKey) => {
     setExpr((e) => calcPress(e, key));
     navigator.vibrate?.(5);
   };
 
+  // パソコンではキーボードの数字と記号でも打てる（入力欄や別の画面を開いている間は効かせない）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+      const at = document.activeElement;
+      if (at instanceof HTMLInputElement || at instanceof HTMLSelectElement || at instanceof HTMLTextAreaElement) return;
+      if (document.querySelector("dialog[open]")) return;
+      const key = calcKeyFromKeyboard(e.key);
+      if (!key) return;
+      e.preventDefault();
+      setExpr((x) => calcPress(x, key));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const submit = () => {
     if (!ready || !chosen) return;
     onAdd({ amount, categoryId: chosen, date, memo: cleanText(memo, MEMO_MAX) });
+    // 日付は戻さない（過去の日の分を続けて記録するため）
     setExpr("");
     setCatId(null);
     setMemo("");
-    setDate(localDate());
   };
 
   const submitLabel =
@@ -432,7 +654,7 @@ function RecordTab({
               : "記録する";
 
   return (
-    <main className="record">
+    <main className={`record ${enter}`}>
       <section className="entry-card" aria-label="記録する">
         <div className="display">
           <p className="expr" aria-hidden={!hasOperator(expr)}>
@@ -447,53 +669,65 @@ function RecordTab({
           </output>
         </div>
 
-        <div className="cat-row">
-          <span className={`dot ${chosen ? colorOf(chosen) : "none"}`} aria-hidden="true" />
+        <div className="pick-row">
           <label className="cat-select">
             <span className="sr-only">カテゴリ</span>
-            <select value={chosen ?? ""} onChange={(e) => setCatId(e.target.value || null)}>
+            <span className={`dot ${chosen ? colorOf(chosen) : "none"}`} aria-hidden="true" />
+            <select
+              value={chosen ?? ""}
+              onChange={(e) => {
+                if (e.target.value === EDIT_CATEGORIES) onEditCategories();
+                else setCatId(e.target.value || null);
+              }}
+            >
               <option value="" disabled>
-                カテゴリを選ぶ
+                カテゴリ
               </option>
               {categories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
               ))}
+              <option value={EDIT_CATEGORIES}>＋ カテゴリを足す・直す</option>
             </select>
           </label>
-          <button type="button" className="icon-btn" onClick={onEditCategories} aria-label="カテゴリを足す・直す">
-            <PlusIcon />
-          </button>
-        </div>
-
-        <div className="meta">
-          <label className="date-field">
+          <label className={date === today ? "date-field" : "date-field other"}>
             <span className="sr-only">日付</span>
-            <span className="date-text" aria-hidden="true">
-              {dateLabel(date)}
+            <span className="date-text full" aria-hidden="true">
+              {dateLabel(date, today)}
+            </span>
+            <span className="date-text short" aria-hidden="true">
+              {dateShort(date, today)}
             </span>
             <input
               type="date"
               value={date}
-              max={localDate()}
-              onChange={(e) => e.target.value && setDate(e.target.value)}
-            />
-          </label>
-          <label className="memo-field">
-            <span className="sr-only">メモ</span>
-            <input
-              value={memo}
-              maxLength={MEMO_MAX}
-              placeholder="メモ（なくてよい）"
-              onChange={(e) => setMemo(e.target.value)}
-              enterKeyHint="done"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              }}
+              max={today}
+              onChange={(e) => pickDate(e.target.value)}
             />
           </label>
         </div>
+
+        <label className="memo-field">
+          <span className="sr-only">メモ</span>
+          <input
+            value={memo}
+            maxLength={MEMO_MAX}
+            placeholder="メモ"
+            list="memo-suggestions"
+            autoComplete="off"
+            onChange={(e) => setMemo(e.target.value)}
+            enterKeyHint="done"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            }}
+          />
+          <datalist id="memo-suggestions">
+            {suggestions.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </label>
 
         <div className="keypad" role="group" aria-label="電卓">
           {KEYS.map((k) => (
@@ -526,7 +760,7 @@ function RecordTab({
       <section className="recent" aria-labelledby="recent-h">
         <h2 id="recent-h">最近の記録</h2>
         {recent.length === 0 ? (
-          <p className="muted">まだありません。記録するとここに出ます</p>
+          <p className="muted">{loading ? "読み込んでいます…" : "まだありません。記録するとここに出ます"}</p>
         ) : (
           <ul className="entries">
             {recent.map((e) => (
@@ -535,7 +769,7 @@ function RecordTab({
                 entry={e}
                 category={categoryOf(e.categoryId, allCategories)}
                 color={colorOf(e.categoryId)}
-                flash={e.id === flashId}
+                flash={isFresh(e.id)}
                 showDate
                 onOpen={() => onOpen(e)}
               />
@@ -567,7 +801,10 @@ function EntryRow({
       <button type="button" className="entry" onClick={onOpen}>
         <span className={`dot ${color}`} aria-hidden="true" />
         <span className="entry-main">
-          <span className="entry-cat">{category.name}</span>
+          <span className="entry-cat">
+            {category.name}
+            {entry.pending && <span className="pending">送信待ち</span>}
+          </span>
           <span className="entry-sub">
             {[showDate ? dateLabel(entry.date) : "", entry.memo, entry.addedBy].filter(Boolean).join("・")}
           </span>
@@ -583,30 +820,42 @@ function EntryRow({
 function MonthTab({
   month,
   onMonth,
+  today,
+  enter,
+  ready,
   entries,
   categories,
   budget,
   colorOf,
+  isFresh,
   onOpen,
   onBudget,
 }: {
   month: string;
   onMonth: (m: string) => void;
+  today: string;
+  enter: string;
+  /** その月の記録を読み終えたか */
+  ready: boolean;
   entries: Entry[];
   categories: Category[];
   budget: number | null;
   colorOf: (id: string) => string;
+  isFresh: (id: string) => boolean;
   onOpen: (e: Entry) => void;
   onBudget: () => void;
 }) {
-  const thisMonth = monthOf(localDate());
-  const today = localDate();
+  const thisMonth = monthOf(today);
   const [selected, setSelected] = useState<string | null>(null);
-  // 月を変えたら日の選択を外す
+  const [openCat, setOpenCat] = useState<string | null>(null);
+  // 月を変えたら日の選択と開いた内訳を戻し、進んだ向きから入ってくるように見せる
   const [shownMonth, setShownMonth] = useState(month);
+  const [slide, setSlide] = useState("");
   if (shownMonth !== month) {
+    setSlide(month < shownMonth ? "from-left" : "from-right");
     setShownMonth(month);
     setSelected(null);
+    setOpenCat(null);
   }
   const weeks = calendarWeeks(month, entries);
   const total = sum(entries);
@@ -614,9 +863,12 @@ function MonthTab({
   const days = groupByDate(selected ? entries.filter((e) => e.date === selected) : entries);
   const left = budget !== null ? budget - total : null;
   const ratio = budget ? Math.min(1, total / budget) : 0;
+  const pace = left !== null ? paceFor(month, today, left) : null;
+  // 読み終える前の ¥0 を「まだ使っていない」と読み違えないよう、数字は出さない
+  const shown = (n: number) => (ready ? yen(n) : "…");
 
   return (
-    <main className="month">
+    <main className={`month ${enter}`}>
       <div className="month-nav">
         <button className="icon-btn" type="button" aria-label="前の月" onClick={() => onMonth(addMonths(month, -1))}>
           <ChevronIcon dir="left" />
@@ -633,11 +885,12 @@ function MonthTab({
         </button>
       </div>
 
+      <div className={`month-body ${slide}`} key={month}>
       <section className="summary">
         {left !== null && budget !== null ? (
           <>
             <p className="summary-label">{month === thisMonth ? "今月の残り" : "残り"}</p>
-            <p className={left < 0 ? "summary-big over" : "summary-big"}>{yen(left)}</p>
+            <p className={left < 0 ? "summary-big over" : "summary-big"}>{shown(left)}</p>
             <div
               className={left < 0 ? "meter over" : "meter"}
               role="meter"
@@ -649,13 +902,27 @@ function MonthTab({
               <span style={{ width: `${ratio * 100}%` }} />
             </div>
             <p className="summary-sub">
-              予算 {yen(budget)}・使った {yen(total)}
+              予算 {yen(budget)}・使った {shown(total)}
             </p>
+            {pace && (
+              // 読み終える前も1行ぶんの場所を取っておき、出たときに下がずれないようにする
+              <p className="summary-pace">
+                {!ready ? (
+                  "\u00a0"
+                ) : left > 0 ? (
+                  <>
+                    月末まで{pace.daysLeft}日・1日あたり <strong>{yen(pace.perDay)}</strong>
+                  </>
+                ) : (
+                  `月末まで${pace.daysLeft}日`
+                )}
+              </p>
+            )}
           </>
         ) : (
           <>
             <p className="summary-label">使った合計</p>
-            <p className="summary-big">{yen(total)}</p>
+            <p className="summary-big">{shown(total)}</p>
             {month === thisMonth && (
               <button className="btn" type="button" onClick={onBudget}>
                 月の予算を決める
@@ -710,7 +977,9 @@ function MonthTab({
           )}
         </div>
         {days.length === 0 ? (
-          <p className="muted">{selected ? "この日の記録はありません" : "この月の記録はまだありません"}</p>
+          <p className="muted">
+            {!ready ? "読み込んでいます…" : selected ? "この日の記録はありません" : "この月の記録はまだありません"}
+          </p>
         ) : (
           days.map((d) => (
             <div key={d.date} className="day">
@@ -725,6 +994,7 @@ function MonthTab({
                     entry={e}
                     category={categoryOf(e.categoryId, categories)}
                     color={colorOf(e.categoryId)}
+                    flash={isFresh(e.id)}
                     onOpen={() => onOpen(e)}
                   />
                 ))}
@@ -738,39 +1008,78 @@ function MonthTab({
         <section className="by-cat" aria-labelledby="bycat-h">
           <h2 id="bycat-h">カテゴリ別</h2>
           <ul>
-            {totals.map((t) => (
-              <li key={t.category.id}>
-                <span className="bar-label">{t.category.name}</span>
-                <span className="bar">
-                  <span className={colorOf(t.category.id)} style={{ width: `${(t.total / totals[0].total) * 100}%` }} />
-                </span>
-                <span className="bar-value">{yen(t.total)}</span>
-              </li>
-            ))}
+            {totals.map((t) => {
+              const open = openCat === t.category.id;
+              return (
+                <li key={t.category.id}>
+                  <button
+                    type="button"
+                    className="cat-total"
+                    aria-expanded={open}
+                    onClick={() => setOpenCat(open ? null : t.category.id)}
+                  >
+                    <span className="bar-label">{t.category.name}</span>
+                    <span className="bar">
+                      <span className={colorOf(t.category.id)} style={{ width: `${(t.total / totals[0].total) * 100}%` }} />
+                    </span>
+                    <span className="bar-value">{yen(t.total)}</span>
+                    <ChevronIcon dir="down" />
+                  </button>
+                  <div className={open ? "fold open" : "fold"} inert={!open}>
+                    <ul className="entries inner">
+                      {entries
+                        .filter((e) => categoryOf(e.categoryId, categories).id === t.category.id)
+                        .sort((x, y) => (x.date === y.date ? y.createdAt - x.createdAt : x.date < y.date ? 1 : -1))
+                        .map((e) => (
+                          <EntryRow
+                            key={e.id}
+                            entry={e}
+                            category={t.category}
+                            color={colorOf(e.categoryId)}
+                            showDate
+                            onOpen={() => onOpen(e)}
+                          />
+                        ))}
+                    </ul>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
+      </div>
     </main>
   );
 }
 
 /* ---------- ダイアログ ---------- */
 
+/** 閉じる動きの最中かどうかと、動きが終わったときに呼ぶもの。BookScreen が渡す */
+const DialogContext = createContext<{ closing: boolean; onClosed: () => void }>({
+  closing: false,
+  onClosed: () => {},
+});
+/** 閉じる動きの長さ（styles.css の .sheet.closing と揃える） */
+const SHEET_CLOSE_MS = 220;
+
 function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const { closing, onClosed } = useContext(DialogContext);
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
     ref.current?.showModal();
     // showModal は最初のボタン（閉じる）へ移るので、入力欄から始めたい画面はそこへ移し直す
     ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
-    return () => {
-      if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
-    };
   }, []);
+  useEffect(() => {
+    if (!closing) return;
+    const t = window.setTimeout(onClosed, SHEET_CLOSE_MS);
+    return () => window.clearTimeout(t);
+  }, [closing, onClosed]);
   return (
     <dialog
       ref={ref}
-      className="sheet"
+      className={closing ? "sheet closing" : "sheet"}
       aria-labelledby="dlg-title"
       onCancel={(e) => {
         e.preventDefault();
@@ -890,6 +1199,16 @@ function MenuDialog({
   onCategories: () => void;
 }) {
   const [name, setName] = useState(me);
+  const [theme, setTheme] = useState<Theme>(currentTheme);
+  const pickTheme = (t: Theme) => {
+    applyTheme(t);
+    write(STORE_THEME, t);
+    setTheme(t);
+  };
+  // ホーム画面から開いているときは、置き方の案内を出さない
+  const installed =
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
 
   const share = async () => {
     const url = window.location.href;
@@ -922,6 +1241,24 @@ function MenuDialog({
           一緒に使う人へリンクを送る
         </button>
         <p className="muted small">このリンクを知っている人は家計簿を見て書けます。2人の間だけで持ってください。</p>
+        {!installed && (
+          <p className="muted small">
+            {/iPhone|iPad/.test(navigator.userAgent)
+              ? "Safari の共有ボタンから「ホーム画面に追加」を選ぶと、アプリのように開けます。LINE などの中で開いたときは、先に Safari で開き直してください。"
+              : "ブラウザのメニューから「ホーム画面に追加」を選ぶと、アプリのように開けます。"}
+          </p>
+        )}
+        <div className="choice" role="group" aria-label="画面の明るさ">
+          <span>画面の色</span>
+          <div className="seg">
+            <button type="button" className={theme === "light" ? "on" : ""} aria-pressed={theme === "light"} onClick={() => pickTheme("light")}>
+              明るい
+            </button>
+            <button type="button" className={theme === "dark" ? "on" : ""} aria-pressed={theme === "dark"} onClick={() => pickTheme("dark")}>
+              暗い
+            </button>
+          </div>
+        </div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -1145,21 +1482,33 @@ function CategoryDialog({
   );
 }
 
+/** 消える動きの長さ（styles.css の .toast.leaving と揃える） */
+const TOAST_LEAVE_MS = 220;
+
 function Toast({ toast, onDone }: { toast: ToastState; onDone: () => void }) {
+  const [leaving, setLeaving] = useState(false);
   useEffect(() => {
-    const t = window.setTimeout(onDone, toast.action ? 6000 : 3000);
+    const t = window.setTimeout(() => setLeaving(true), toast.action ? 6000 : 3000);
     return () => window.clearTimeout(t);
-  }, [toast, onDone]);
+  }, [toast]);
+  useEffect(() => {
+    if (!leaving) return;
+    const t = window.setTimeout(onDone, TOAST_LEAVE_MS);
+    return () => window.clearTimeout(t);
+  }, [leaving, onDone]);
   return (
-    <div className="toast" role="status">
-      <span>{toast.message}</span>
+    <div className={leaving ? "toast leaving" : "toast"} role="status">
+      <span className="toast-text">
+        <span>{toast.message}</span>
+        {toast.sub && <small>{toast.sub}</small>}
+      </span>
       {toast.action && (
         <button
           type="button"
           className="toast-action"
           onClick={() => {
             toast.action!.run();
-            onDone();
+            setLeaving(true);
           }}
         >
           {toast.action.label}
@@ -1191,11 +1540,6 @@ const MenuIcon = () => (
 const CloseIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M6 6l12 12M18 6L6 18" />
-  </svg>
-);
-const PlusIcon = () => (
-  <svg viewBox="0 0 24 24" aria-hidden="true">
-    <path d="M12 5v14M5 12h14" />
   </svg>
 );
 const BackIcon = () => (

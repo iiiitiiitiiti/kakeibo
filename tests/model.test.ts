@@ -12,9 +12,14 @@ import {
   monthRange,
   nextOrder,
   OTHER_ID,
+  calcKeyFromKeyboard,
   calcPress,
+  dateLabel,
+  dateShort,
   evaluate,
   formatExpr,
+  memoSuggestions,
+  paceFor,
   type CalcKey,
   totalsByCategory,
   yen,
@@ -193,5 +198,62 @@ describe("shortYen", () => {
     expect(shortYen(12800)).toBe("1.2万");
     expect(shortYen(30000)).toBe("3万");
     expect(shortYen(150000)).toBe("15万");
+  });
+});
+
+describe("dateLabel / dateShort", () => {
+  it("今日でも言葉にせず日付で出す", () => {
+    expect(dateLabel("2026-11-22", "2026-11-22")).toBe("11月22日(日)");
+    expect(dateLabel("2026-11-21", "2026-11-22")).toBe("11月21日(土)");
+    expect(dateShort("2026-11-22", "2026-11-22")).toBe("11/22(日)");
+  });
+  it("今年でなければ年を付ける", () => {
+    expect(dateLabel("2025-12-31", "2026-01-01")).toBe("2025年12月31日(水)");
+    expect(dateShort("2025-12-31", "2026-01-01")).toBe("2025/12/31");
+  });
+});
+
+describe("paceFor", () => {
+  it("今日を含めた月末までの日数で残りを割る", () => {
+    expect(paceFor("2026-11", "2026-11-22", 70000)).toEqual({ daysLeft: 9, perDay: 7777 });
+    expect(paceFor("2026-11", "2026-11-30", 500)).toEqual({ daysLeft: 1, perDay: 500 });
+    expect(paceFor("2028-02", "2028-02-01", 29000)).toEqual({ daysLeft: 29, perDay: 1000 });
+  });
+  it("残りが無ければ 0、今月でなければ出さない", () => {
+    expect(paceFor("2026-11", "2026-11-22", -300)).toEqual({ daysLeft: 9, perDay: 0 });
+    expect(paceFor("2026-10", "2026-11-22", 70000)).toBeNull();
+  });
+});
+
+describe("memoSuggestions", () => {
+  const list = [
+    entry({ memo: "セブン", categoryId: "food", createdAt: 3 }),
+    entry({ memo: "ニトリ", categoryId: "daily", createdAt: 4 }),
+    entry({ memo: "セブン", categoryId: "food", createdAt: 5 }),
+    entry({ memo: "", categoryId: "food", createdAt: 6 }),
+    entry({ memo: "やまや", categoryId: "food", createdAt: 1 }),
+  ];
+  it("選んだカテゴリのメモを新しい順に、同じものは1つで出す", () => {
+    expect(memoSuggestions(list, "food")).toEqual(["セブン", "やまや"]);
+  });
+  it("カテゴリを選ぶ前は全部から出し、数を絞る", () => {
+    expect(memoSuggestions(list, null)).toEqual(["セブン", "ニトリ", "やまや"]);
+    expect(memoSuggestions(list, null, 2)).toEqual(["セブン", "ニトリ"]);
+  });
+});
+
+describe("calcKeyFromKeyboard", () => {
+  it("数字と記号を電卓のキーに読み替える", () => {
+    expect(calcKeyFromKeyboard("7")).toBe("7");
+    expect(calcKeyFromKeyboard("-")).toBe("−");
+    expect(calcKeyFromKeyboard("*")).toBe("×");
+    expect(calcKeyFromKeyboard("/")).toBe("÷");
+    expect(calcKeyFromKeyboard("Backspace")).toBe("back");
+    expect(calcKeyFromKeyboard("Escape")).toBe("C");
+  });
+  it("関係ないキーは読み替えない", () => {
+    expect(calcKeyFromKeyboard("a")).toBeNull();
+    expect(calcKeyFromKeyboard("Enter")).toBeNull();
+    expect(calcKeyFromKeyboard("Tab")).toBeNull();
   });
 });

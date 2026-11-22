@@ -14,6 +14,7 @@ import {
   where,
   writeBatch,
   type DocumentData,
+  type QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { getDb } from "./firebase";
 import {
@@ -32,7 +33,7 @@ export type LoadState = "loading" | "ready" | "denied" | "offline-timeout";
 
 const toMillis = (v: unknown): number => (v instanceof Timestamp ? v.toMillis() : Date.now());
 
-function toEntry(id: string, d: DocumentData): Entry {
+function toEntry(id: string, d: DocumentData, pending: boolean): Entry {
   return {
     id,
     amount: typeof d.amount === "number" ? d.amount : 0,
@@ -41,6 +42,7 @@ function toEntry(id: string, d: DocumentData): Entry {
     memo: typeof d.memo === "string" ? d.memo : "",
     addedBy: typeof d.addedBy === "string" ? d.addedBy : "",
     createdAt: toMillis(d.createdAt),
+    pending,
   };
 }
 
@@ -52,6 +54,11 @@ function toCategory(id: string, d: DocumentData): Category {
     hidden: d.hidden === true,
   };
 }
+
+const docToEntry = (d: QueryDocumentSnapshot): Entry =>
+  toEntry(d.id, d.data({ serverTimestamps: "estimate" }), d.metadata.hasPendingWrites);
+
+const NO_ENTRIES: Entry[] = [];
 
 export interface NewEntry {
   amount: number;
@@ -67,6 +74,9 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
   const [storedCats, setStoredCats] = useState<Category[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [state, setState] = useState<LoadState>("loading");
+  /** 保存先の今の中身を一度でも受け取ったか（手元の写しだけではない） */
+  const [synced, setSynced] = useState(false);
+  const [loadedMonth, setLoadedMonth] = useState<string | null>(null);
 
   const refs = useMemo(() => {
     const db = getDb();
@@ -89,13 +99,16 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
       setState(e.code === "permission-denied" ? "denied" : "offline-timeout");
     };
 
+    // 届いたかどうか（送信待ち）の変化も受け取る
     const unRecent = onSnapshot(
       query(refs.entries, orderBy("createdAt", "desc"), limit(RECENT_COUNT)),
+      { includeMetadataChanges: true },
       (snap) => {
         gotData = true;
         window.clearTimeout(timer);
-        setRecent(snap.docs.map((d) => toEntry(d.id, d.data({ serverTimestamps: "estimate" }))));
+        setRecent(snap.docs.map(docToEntry));
         setState("ready");
+        if (!snap.metadata.fromCache) setSynced(true);
       },
       fail,
     );
@@ -125,9 +138,14 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
   useEffect(() => {
     const [from, to] = monthRange(month);
     setMonthEntries([]);
+    setLoadedMonth(null);
     return onSnapshot(
       query(refs.entries, where("date", ">=", from), where("date", "<=", to)),
-      (snap) => setMonthEntries(snap.docs.map((d) => toEntry(d.id, d.data({ serverTimestamps: "estimate" })))),
+      { includeMetadataChanges: true },
+      (snap) => {
+        setMonthEntries(snap.docs.map(docToEntry));
+        setLoadedMonth(month);
+      },
       (e) => console.error("その月の記録を読めませんでした", e),
     );
   }, [refs, month]);
@@ -208,5 +226,16 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
     [refs, me, onWriteError],
   );
 
-  return { state, recent, monthEntries, categories, budgets, ...actions };
+  // 月を切り替えた直後は、前の月の記録を新しい月のものとして見せない
+  const monthReady = loadedMonth === month;
+  return {
+    state,
+    synced,
+    monthReady,
+    recent,
+    monthEntries: monthReady ? monthEntries : NO_ENTRIES,
+    categories,
+    budgets,
+    ...actions,
+  };
 }
