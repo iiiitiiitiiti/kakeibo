@@ -318,6 +318,8 @@ function BookScreen({
   // 今月以外を見ているときだけ持つ。持っていなければ今月（月が変わっても付いていく）
   const [pickedMonth, setPickedMonth] = useState<string | null>(null);
   const month = pickedMonth ?? thisMonth;
+  // カレンダーの「この日に記録する」で選んだ日。上の「記録」から開いたときは持たない（今日で始める）
+  const [startDate, setStartDate] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   // 閉じるときは下へ引っ込む動きを見せてから外す
   const [closing, setClosing] = useState(false);
@@ -393,7 +395,10 @@ function BookScreen({
             onClick={() => {
               // 記録画面では今月の合計を追う（記録した直後に今月の残りを知らせるため）
               setPickedMonth(null);
-              if (tab !== "record") setEnter("from-left");
+              if (tab !== "record") {
+                setStartDate(null);
+                setEnter("from-left");
+              }
               setTab("record");
             }}
           >
@@ -431,6 +436,7 @@ function BookScreen({
           memoSource={book.monthEntries}
           loading={book.state === "loading"}
           today={today}
+          startDate={startDate}
           enter={enter}
           colorOf={colorOf}
           isFresh={isFresh}
@@ -466,6 +472,14 @@ function BookScreen({
           isFresh={isFresh}
           onOpen={(entry) => openDialog({ kind: "edit", entry })}
           onBudget={() => openDialog({ kind: "budget" })}
+          onRecordOn={(d) => {
+            setStartDate(d);
+            setPickedMonth(null);
+            setEnter("from-left");
+            setTab("record");
+            // 下まで送った位置のまま切り替えると、金額の欄が画面の外になる
+            window.scrollTo(0, 0);
+          }}
         />
       )}
 
@@ -566,6 +580,7 @@ function RecordTab({
   memoSource,
   loading,
   today,
+  startDate,
   enter,
   colorOf,
   isFresh,
@@ -579,6 +594,8 @@ function RecordTab({
   memoSource: Entry[];
   loading: boolean;
   today: string;
+  /** カレンダーで選んでから開いたときの日付。無ければ今日で始める */
+  startDate: string | null;
   enter: string;
   colorOf: (id: string) => string;
   isFresh: (id: string) => boolean;
@@ -590,7 +607,9 @@ function RecordTab({
   const [catId, setCatId] = useState<string | null>(null);
   // 自分で選んだ日付だけ持つ。選んでいなければ今日（日をまたいでも付いていく）。
   // 選んだ日付はその日のうちだけ有効にする。開いたまま何日もたってから、前に選んだ日付で記録してしまわないように
-  const [picked, setPicked] = useState<{ date: string; on: string } | null>(null);
+  const [picked, setPicked] = useState<{ date: string; on: string } | null>(() =>
+    startDate && startDate < today ? { date: startDate, on: today } : null,
+  );
   const date = picked && picked.on === today ? picked.date : today;
   const pickDate = (v: string) => {
     // 端末の日付選びが上限を守らなくても、先の日付は受け取らない
@@ -713,7 +732,7 @@ function RecordTab({
           <input
             value={memo}
             maxLength={MEMO_MAX}
-            placeholder="メモ"
+            placeholder="メモ(店名など)"
             list="memo-suggestions"
             autoComplete="off"
             onChange={(e) => setMemo(e.target.value)}
@@ -830,6 +849,7 @@ function MonthTab({
   isFresh,
   onOpen,
   onBudget,
+  onRecordOn,
 }: {
   month: string;
   onMonth: (m: string) => void;
@@ -844,6 +864,7 @@ function MonthTab({
   isFresh: (id: string) => boolean;
   onOpen: (e: Entry) => void;
   onBudget: () => void;
+  onRecordOn: (date: string) => void;
 }) {
   const thisMonth = monthOf(today);
   const [selected, setSelected] = useState<string | null>(null);
@@ -932,6 +953,52 @@ function MonthTab({
         )}
       </section>
 
+      {/* 記録が届く前から場所だけ置いておき、届いたら開く（下のカレンダーが急に飛ばないように） */}
+      <div className={totals.length > 0 ? "fold open by-cat-fold" : "fold by-cat-fold"} inert={totals.length === 0}>
+        <section className="by-cat" aria-labelledby="bycat-h">
+          <h2 id="bycat-h">カテゴリ別</h2>
+          <ul>
+            {totals.map((t) => {
+              const open = openCat === t.category.id;
+              return (
+                <li key={t.category.id}>
+                  <button
+                    type="button"
+                    className="cat-total"
+                    aria-expanded={open}
+                    onClick={() => setOpenCat(open ? null : t.category.id)}
+                  >
+                    <span className="bar-label">{t.category.name}</span>
+                    <span className="bar">
+                      <span className={colorOf(t.category.id)} style={{ width: `${(t.total / totals[0].total) * 100}%` }} />
+                    </span>
+                    <span className="bar-value">{yen(t.total)}</span>
+                    <ChevronIcon dir="down" />
+                  </button>
+                  <div className={open ? "fold open" : "fold"} inert={!open}>
+                    <ul className="entries inner">
+                      {entries
+                        .filter((e) => categoryOf(e.categoryId, categories).id === t.category.id)
+                        .sort((x, y) => (x.date === y.date ? y.createdAt - x.createdAt : x.date < y.date ? 1 : -1))
+                        .map((e) => (
+                          <EntryRow
+                            key={e.id}
+                            entry={e}
+                            category={t.category}
+                            color={colorOf(e.categoryId)}
+                            showDate
+                            onOpen={() => onOpen(e)}
+                          />
+                        ))}
+                    </ul>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      </div>
+
       <section className="calendar" aria-label={`${monthLabel(month)}のカレンダー`}>
         <div className="cal-head" aria-hidden="true">
           {["日", "月", "火", "水", "木", "金", "土"].map((w) => (
@@ -976,6 +1043,11 @@ function MonthTab({
             </button>
           )}
         </div>
+        {selected && selected <= today && (
+          <button className="btn wide day-add" type="button" onClick={() => onRecordOn(selected)}>
+            この日に記録する
+          </button>
+        )}
         {days.length === 0 ? (
           <p className="muted">
             {!ready ? "読み込んでいます…" : selected ? "この日の記録はありません" : "この月の記録はまだありません"}
@@ -1004,50 +1076,6 @@ function MonthTab({
         )}
       </section>
 
-      {totals.length > 0 && (
-        <section className="by-cat" aria-labelledby="bycat-h">
-          <h2 id="bycat-h">カテゴリ別</h2>
-          <ul>
-            {totals.map((t) => {
-              const open = openCat === t.category.id;
-              return (
-                <li key={t.category.id}>
-                  <button
-                    type="button"
-                    className="cat-total"
-                    aria-expanded={open}
-                    onClick={() => setOpenCat(open ? null : t.category.id)}
-                  >
-                    <span className="bar-label">{t.category.name}</span>
-                    <span className="bar">
-                      <span className={colorOf(t.category.id)} style={{ width: `${(t.total / totals[0].total) * 100}%` }} />
-                    </span>
-                    <span className="bar-value">{yen(t.total)}</span>
-                    <ChevronIcon dir="down" />
-                  </button>
-                  <div className={open ? "fold open" : "fold"} inert={!open}>
-                    <ul className="entries inner">
-                      {entries
-                        .filter((e) => categoryOf(e.categoryId, categories).id === t.category.id)
-                        .sort((x, y) => (x.date === y.date ? y.createdAt - x.createdAt : x.date < y.date ? 1 : -1))
-                        .map((e) => (
-                          <EntryRow
-                            key={e.id}
-                            entry={e}
-                            category={t.category}
-                            color={colorOf(e.categoryId)}
-                            showDate
-                            onOpen={() => onOpen(e)}
-                          />
-                        ))}
-                    </ul>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      )}
       </div>
     </main>
   );

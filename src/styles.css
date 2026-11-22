@@ -698,7 +698,9 @@ input::placeholder {
 .recent,
 .days,
 .by-cat {
-  margin-top: var(--space-6);
+  min-height: 0;
+  padding-top: var(--space-6);
+  overflow: hidden;
 }
 .recent h2,
 .by-cat h2,
@@ -928,6 +930,9 @@ input::placeholder {
   gap: var(--space-2);
   min-height: 36px;
   margin-bottom: var(--space-2);
+}
+.day-add {
+  margin-bottom: var(--space-3);
 }
 
 /* ---------- カレンダー ---------- */
@@ -1209,8 +1214,8 @@ input::placeholder {
     grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
     grid-template-areas:
       "summary days"
-      "calendar days"
-      "bycat days";
+      "bycat days"
+      "calendar days";
     grid-template-rows: auto auto 1fr;
     column-gap: var(--space-8);
     align-items: start;
@@ -1221,7 +1226,7 @@ input::placeholder {
   .month-body .calendar {
     grid-area: calendar;
   }
-  .month-body .by-cat {
+  .month-body .by-cat-fold {
     grid-area: bycat;
   }
   .month-body .days {

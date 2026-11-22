@@ -263,4 +263,45 @@ describe("今月", () => {
     expect(fold.textContent).toContain("ニトリ");
     expect(fold.textContent).not.toContain("セブン");
   });
+
+  it("カレンダーで選んだ日から「この日に記録する」を押すと、その日付で記録画面が開く", async () => {
+    window.scrollTo = vi.fn();
+    const book = render();
+    await click(document.querySelectorAll(".tabs button")[1]);
+    expect(document.querySelector(".day-add")).toBeNull();
+
+    const day = (n: string) => [...document.querySelectorAll(".cal-day")].find((b) => b.querySelector(".cal-num")?.textContent === n)!;
+    // 先の日には出さない
+    await click(day("25"));
+    expect(document.querySelector(".day-add")).toBeNull();
+
+    await click(day("20"));
+    expect($(".day-add").textContent).toBe("この日に記録する");
+    await click($(".day-add"));
+    expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
+    expect($(".date-text.full").textContent).toBe("11月20日(金)");
+    expect($(".date-field").className).toContain("other");
+
+    await type(["8", "0", "0"]);
+    await pick(".cat-select select", "food");
+    await click($(".submit"));
+    expect(book.add).toHaveBeenCalledWith({ amount: 800, categoryId: "food", date: "2026-11-20", memo: "" });
+    expect($(".toast").textContent).toContain("今月の残り ¥69,200");
+
+    // 上の「記録」から開き直したときは今日で始める
+    await click(document.querySelectorAll(".tabs button")[1]);
+    await click(document.querySelectorAll(".tabs button")[0]);
+    expect($(".date-text.full").textContent).toBe("11月22日(日)");
+  });
+
+  it("今日を選んで「この日に記録する」を押すと、今日の日付で開く", async () => {
+    window.scrollTo = vi.fn();
+    render();
+    await click(document.querySelectorAll(".tabs button")[1]);
+    await click($(".cal-day.today"));
+    await click($(".day-add"));
+    expect($(".date-text.full").textContent).toBe("11月22日(日)");
+    expect($(".date-field").className).not.toContain("other");
+    expect($<HTMLInputElement>(".memo-field input").placeholder).toBe("メモ(店名など)");
+  });
 });
