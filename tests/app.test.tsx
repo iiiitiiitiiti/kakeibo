@@ -49,6 +49,7 @@ const makeBook = (over: Record<string, unknown> = {}) => ({
   monthEntries: [entry({ amount: 30000 })],
   categories: mergeCategories([]),
   budgets: [{ month: "2026-11", amount: 100000 }],
+  categoryBudgets: [] as { month: string; categoryId: string; amount: number }[],
   add: vi.fn(() => "new-id"),
   update: vi.fn(),
   remove: vi.fn(),
@@ -57,6 +58,7 @@ const makeBook = (over: Record<string, unknown> = {}) => ({
   swapCategories: vi.fn(),
   addCategory: vi.fn(() => "cat-id"),
   setBudget: vi.fn(),
+  setCategoryBudget: vi.fn(),
   ...over,
 });
 
@@ -182,6 +184,41 @@ describe("記録する", () => {
     expect($(".date-field").className).not.toContain("other");
   });
 
+  it("0時を過ぎたら、何もしなくてもすぐ今日の日付に変わる", async () => {
+    vi.setSystemTime(new Date(2026, 10, 22, 23, 59, 50));
+    render();
+    expect($(".date-text.full").textContent).toBe("11月22日(日)");
+    await act(() => vi.advanceTimersByTime(11000));
+    expect($(".date-text.full").textContent).toBe("11月23日(月)");
+  });
+
+  it("カテゴリの予算があれば、そのカテゴリの残りを知らせる。超えたら超えた額を先に知らせる", async () => {
+    render(
+      makeBook({
+        monthEntries: [entry({ amount: 30000, categoryId: "food" }), entry({ amount: 5000, categoryId: "daily" })],
+        categoryBudgets: [
+          { month: "2026-10", categoryId: "food", amount: 31000 },
+          { month: "2026-11", categoryId: "daily", amount: 0 },
+        ],
+      }),
+    );
+    await type(["4", "0", "0"]);
+    await pick(".cat-select select", "food");
+    await click($(".submit"));
+    expect($(".toast").textContent).toContain("食費の残り ¥600");
+
+    await type(["1", "3", "0", "0"]);
+    await pick(".cat-select select", "food");
+    await click($(".submit"));
+    expect($(".toast").textContent).toContain("食費の予算を ¥300 超えています");
+
+    // 0 にしたカテゴリは「決めていない」。全体の残りを出す
+    await type(["1", "0", "0"]);
+    await pick(".cat-select select", "daily");
+    await click($(".submit"));
+    expect($(".toast").textContent).toContain("今月の残り ¥64,900");
+  });
+
   it("プルダウンの最後からカテゴリの整理を開いても、選んでいたカテゴリは変わらない", async () => {
     HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
       this.open = true;
@@ -263,6 +300,79 @@ describe("今月", () => {
     expect(fold.className).toBe("fold open");
     expect(fold.textContent).toContain("ニトリ");
     expect(fold.textContent).not.toContain("セブン");
+  });
+
+  it("予算を決めたカテゴリは残りを出し、超えたら赤くする。隠したカテゴリの予算は使わない", async () => {
+    const cats = mergeCategories([{ id: "eatout", name: "外食", order: 30, hidden: true }]);
+    render(
+      makeBook({
+        categories: cats,
+        monthEntries: [
+          entry({ amount: 5000, categoryId: "food" }),
+          entry({ amount: 900, categoryId: "daily" }),
+          entry({ amount: 300, categoryId: "eatout" }),
+          entry({ amount: 100, categoryId: "phone" }),
+        ],
+        categoryBudgets: [
+          { month: "2026-09", categoryId: "food", amount: 4000 },
+          { month: "2026-11", categoryId: "daily", amount: 1800 },
+          { month: "2026-11", categoryId: "eatout", amount: 100 },
+          { month: "2026-12", categoryId: "phone", amount: 50 },
+        ],
+      }),
+    );
+    await click(document.querySelectorAll(".tabs button")[1]);
+    const row = (name: string) =>
+      [...document.querySelectorAll<HTMLElement>(".cat-total")].find((r) => r.querySelector(".bar-label")!.textContent === name)!;
+
+    expect(row("食費").className).toBe("cat-total over");
+    expect(row("食費").querySelector(".cat-budget")!.textContent).toBe("予算 ¥4,000・¥1,000 超え");
+    expect(row("食費").querySelector<HTMLElement>(".bar span")!.style.width).toBe("100%");
+    expect(row("日用品").className).toBe("cat-total");
+    expect(row("日用品").querySelector(".cat-budget")!.textContent).toBe("予算 ¥1,800・残り ¥900");
+    expect(row("日用品").querySelector<HTMLElement>(".bar span")!.style.width).toBe("50%");
+    expect(row("外食").querySelector(".cat-budget")).toBeNull();
+    expect(row("通信").querySelector(".cat-budget")).toBeNull();
+  });
+
+  it("月の予算の画面でカテゴリごとの額を入れると、変わった分だけ保存する", async () => {
+    HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    };
+    // メニューは、ホーム画面に追加済みかどうかを調べる
+    window.matchMedia ??= (() => ({ matches: false })) as unknown as typeof window.matchMedia;
+    const book = render(
+      makeBook({
+        categoryBudgets: [
+          { month: "2026-10", categoryId: "food", amount: 40000 },
+          { month: "2026-10", categoryId: "daily", amount: 8000 },
+        ],
+      }),
+    );
+    await click($('[aria-label="メニュー"]'));
+    await click([...document.querySelectorAll("dialog button")].find((b) => b.textContent!.includes("月の予算"))!);
+    const input = (name: string) =>
+      [...document.querySelectorAll<HTMLElement>(".cat-budget-row")]
+        .find((r) => r.querySelector(".cat-budget-name")!.textContent === name)!
+        .querySelector("input")!;
+    expect(input("食費").value).toBe("40000");
+    expect(input("外食").value).toBe("");
+
+    const set = (el: HTMLInputElement, value: string) =>
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, value);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    await set(input("外食"), "12000");
+    await set(input("日用品"), "");
+    await act(() => $<HTMLFormElement>("dialog form").requestSubmit());
+
+    expect(book.setBudget).not.toHaveBeenCalled();
+    expect(book.setCategoryBudget.mock.calls).toEqual([
+      ["2026-11", "daily", 0],
+      ["2026-11", "eatout", 12000],
+    ]);
+    expect($(".toast").textContent).toContain("カテゴリの予算を保存しました");
   });
 
   it("カレンダーで選んだ日から「この日に記録する」を押すと、その日付で記録画面が開く", async () => {

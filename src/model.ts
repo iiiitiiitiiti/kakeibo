@@ -124,6 +124,38 @@ export function budgetFor(month: string, budgets: readonly Budget[]): number | n
   return best && best.amount > 0 ? best.amount : null;
 }
 
+/** カテゴリごとの月の予算。保存先の文書 ID は `YYYY-MM_カテゴリID`（firestore.rules の catBudgets と揃える） */
+export interface CategoryBudget {
+  /** YYYY-MM */
+  month: string;
+  categoryId: string;
+  amount: number;
+}
+
+export const categoryBudgetId = (month: string, categoryId: string): string => `${month}_${categoryId}`;
+
+/** 文書 ID を月とカテゴリに分ける。形が違えば null */
+export function parseCategoryBudgetId(id: string): { month: string; categoryId: string } | null {
+  const m = /^(\d{4}-(?:0[1-9]|1[0-2]))_([A-Za-z0-9]{1,40})$/.exec(id);
+  return m ? { month: m[1], categoryId: m[2] } : null;
+}
+
+/**
+ * その月のカテゴリごとの予算。月全体の予算と同じく、カテゴリごとに「その月か、それより前で一番新しい月の値」を使う。
+ * 0 は「決めていない」なので入れない。
+ */
+export function categoryBudgetsFor(month: string, list: readonly CategoryBudget[]): Map<string, number> {
+  const best = new Map<string, CategoryBudget>();
+  for (const b of list) {
+    if (b.month > month) continue;
+    const cur = best.get(b.categoryId);
+    if (!cur || b.month > cur.month) best.set(b.categoryId, b);
+  }
+  const out = new Map<string, number>();
+  for (const b of best.values()) if (b.amount > 0) out.set(b.categoryId, b.amount);
+  return out;
+}
+
 export interface CategoryTotal {
   category: Category;
   total: number;

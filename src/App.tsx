@@ -15,6 +15,7 @@ import {
   AMOUNT_MAX,
   BUDGET_MAX,
   budgetFor,
+  categoryBudgetsFor,
   calendarWeeks,
   CAT_NAME_MAX,
   categoryOf,
@@ -145,10 +146,22 @@ function useToday(): string {
     document.addEventListener("visibilitychange", check);
     window.addEventListener("focus", check);
     const timer = window.setInterval(check, 30000);
+    // 0時を過ぎてすぐの記録が前の日付にならないよう、日が変わる時刻にも合わせる
+    let midnight = 0;
+    const arm = () => {
+      const now = new Date();
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+      midnight = window.setTimeout(() => {
+        check();
+        arm();
+      }, next - now.getTime() + 50);
+    };
+    arm();
     return () => {
       document.removeEventListener("visibilitychange", check);
       window.removeEventListener("focus", check);
       window.clearInterval(timer);
+      window.clearTimeout(midnight);
     };
   }, []);
   return today;
@@ -372,6 +385,13 @@ function BookScreen({
   const arrivals = useArrivals(book.recent, book.synced);
   const isFresh = (id: string) => id === flashId || arrivals.has(id);
   const budget = budgetFor(month, book.budgets);
+  // 隠しているカテゴリの予算は使わない（設定の画面に出ないので、直せないまま赤くなるのを防ぐ）
+  const catBudgetsOf = (m: string) => {
+    const map = categoryBudgetsFor(m, book.categoryBudgets);
+    for (const c of categories) if (c.hidden) map.delete(c.id);
+    return map;
+  };
+  const catBudgets = catBudgetsOf(month);
 
   if (book.state === "denied") return <NoKey onKey={onKey} denied />;
 
@@ -441,19 +461,31 @@ function BookScreen({
           colorOf={colorOf}
           isFresh={isFresh}
           onAdd={(e) => {
-            // 今月の残りは、この記録が合計に入る前の値から引いて出す
-            const left =
-              budget !== null && book.monthReady && month === thisMonth && monthOf(e.date) === thisMonth
-                ? budget - sum(book.monthEntries) - e.amount
+            // 残りは、この記録が合計に入る前の値から引いて出す
+            const known = book.monthReady && month === thisMonth && monthOf(e.date) === thisMonth;
+            const cat = categoryOf(e.categoryId, categories);
+            const left = known && budget !== null ? budget - sum(book.monthEntries) - e.amount : null;
+            const catBudget = known ? (catBudgets.get(cat.id) ?? null) : null;
+            const catLeft =
+              catBudget !== null
+                ? catBudget -
+                  sum(book.monthEntries.filter((x) => categoryOf(x.categoryId, categories).id === cat.id)) -
+                  e.amount
                 : null;
             const id = book.add(e);
             setFlashId(id);
-            const cat = categoryOf(e.categoryId, categories);
-            showToast(
-              `${cat.name} ${yen(e.amount)} を記録`,
-              { label: "取り消す", run: () => book.remove(id) },
-              left === null ? undefined : left >= 0 ? `今月の残り ${yen(left)}` : `今月の予算を ${yen(-left)} 超えています`,
-            );
+            // 1行しか出せないので、超えた知らせを先に、次にそのカテゴリの残りを出す
+            const note =
+              catLeft !== null && catLeft < 0
+                ? `${cat.name}の予算を ${yen(-catLeft)} 超えています`
+                : left !== null && left < 0
+                  ? `今月の予算を ${yen(-left)} 超えています`
+                  : catLeft !== null
+                    ? `${cat.name}の残り ${yen(catLeft)}`
+                    : left !== null
+                      ? `今月の残り ${yen(left)}`
+                      : undefined;
+            showToast(`${cat.name} ${yen(e.amount)} を記録`, { label: "取り消す", run: () => book.remove(id) }, note);
           }}
           onOpen={(entry) => openDialog({ kind: "edit", entry })}
           onEditCategories={() => openDialog({ kind: "categories" })}
@@ -468,6 +500,7 @@ function BookScreen({
           entries={book.monthEntries}
           categories={categories}
           budget={budget}
+          catBudgets={catBudgets}
           colorOf={colorOf}
           isFresh={isFresh}
           onOpen={(entry) => openDialog({ kind: "edit", entry })}
@@ -514,11 +547,22 @@ function BookScreen({
           <BudgetDialog
             month={thisMonth}
             current={budgetFor(thisMonth, book.budgets)}
+            categories={visible}
+            currentByCategory={catBudgetsOf(thisMonth)}
+            colorOf={colorOf}
             onClose={() => closeDialog()}
-            onSave={(amount) => {
-              book.setBudget(thisMonth, amount);
+            onSave={(amount, changed) => {
+              const before = budgetFor(thisMonth, book.budgets) ?? 0;
+              if (amount !== before) book.setBudget(thisMonth, amount);
+              for (const c of changed) book.setCategoryBudget(thisMonth, c.id, c.amount);
               closeDialog();
-              showToast(amount > 0 ? `予算を ${yen(amount)} にしました` : "予算を決めない設定にしました");
+              showToast(
+                amount !== before || changed.length === 0
+                  ? amount > 0
+                    ? `予算を ${yen(amount)} にしました`
+                    : "予算を決めない設定にしました"
+                  : "カテゴリの予算を保存しました",
+              );
             }}
           />
         )}
@@ -845,6 +889,7 @@ function MonthTab({
   entries,
   categories,
   budget,
+  catBudgets,
   colorOf,
   isFresh,
   onOpen,
@@ -860,6 +905,8 @@ function MonthTab({
   entries: Entry[];
   categories: Category[];
   budget: number | null;
+  /** カテゴリの ID → その月の予算（決めているものだけ） */
+  catBudgets: ReadonlyMap<string, number>;
   colorOf: (id: string) => string;
   isFresh: (id: string) => boolean;
   onOpen: (e: Entry) => void;
@@ -963,23 +1010,34 @@ function MonthTab({
       <div className={totals.length > 0 ? "fold open by-cat-fold" : "fold by-cat-fold"} inert={totals.length === 0}>
         <section className="by-cat" aria-labelledby="bycat-h">
           <h2 id="bycat-h">カテゴリ別</h2>
-          <ul>
+          {/* 予算のある行の棒は「予算のうち使った割合」。無い行は一番多いカテゴリとの比で、見分けが付くよう薄い地を敷かない */}
+          <ul className={totals.some((t) => catBudgets.has(t.category.id)) ? "mixed" : undefined}>
             {totals.map((t) => {
               const open = openCat === t.category.id;
+              const limit = catBudgets.get(t.category.id) ?? null;
+              const over = limit !== null && t.total > limit;
               return (
                 <li key={t.category.id}>
                   <button
                     type="button"
-                    className="cat-total"
+                    className={over ? "cat-total over" : "cat-total"}
                     aria-expanded={open}
                     onClick={() => setOpenCat(open ? null : t.category.id)}
                   >
                     <span className="bar-label">{t.category.name}</span>
-                    <span className="bar">
-                      <span className={colorOf(t.category.id)} style={{ width: `${(t.total / totals[0].total) * 100}%` }} />
+                    <span className={limit !== null ? "bar of-budget" : "bar"}>
+                      <span
+                        className={over ? "over" : colorOf(t.category.id)}
+                        style={{ width: `${(limit !== null ? Math.min(1, t.total / limit) : t.total / totals[0].total) * 100}%` }}
+                      />
                     </span>
                     <span className="bar-value">{yen(t.total)}</span>
                     <ChevronIcon dir="down" />
+                    {limit !== null && (
+                      <span className="cat-budget">
+                        予算 {yen(limit)}・{over ? `${yen(t.total - limit)} 超え` : `残り ${yen(limit - t.total)}`}
+                      </span>
+                    )}
                   </button>
                   <div className={open ? "fold open" : "fold"} inert={!open}>
                     <ul className="entries inner">
@@ -1310,24 +1368,42 @@ function MenuDialog({
 function BudgetDialog({
   month,
   current,
+  categories,
+  currentByCategory,
+  colorOf,
   onClose,
   onSave,
 }: {
   month: string;
   current: number | null;
+  /** 隠していないカテゴリ */
+  categories: Category[];
+  currentByCategory: ReadonlyMap<string, number>;
+  colorOf: (id: string) => string;
   onClose: () => void;
-  onSave: (amount: number) => void;
+  /** changed は、額が変わったカテゴリだけ（0 は「決めない」） */
+  onSave: (amount: number, changed: { id: string; amount: number }[]) => void;
 }) {
   const [text, setText] = useState(current ? String(current) : "");
+  const [catText, setCatText] = useState<Record<string, string>>(() =>
+    Object.fromEntries([...currentByCategory].map(([id, v]) => [id, String(v)])),
+  );
   const amount = parseYen(text);
   const valid = amount <= BUDGET_MAX;
+  const catAmount = (id: string) => parseYen(catText[id] ?? "");
+  const catsValid = categories.every((c) => catAmount(c.id) <= BUDGET_MAX);
   return (
     <Dialog title="月の予算" onClose={onClose}>
       <form
         className="fields"
         onSubmit={(e) => {
           e.preventDefault();
-          if (valid) onSave(amount);
+          if (!valid || !catsValid) return;
+          // 今効いている額（前の月から引き継いだ分を含む）と比べ、変わった分だけ書く
+          const changed = categories
+            .map((c) => ({ id: c.id, amount: catAmount(c.id) }))
+            .filter((c) => c.amount !== (currentByCategory.get(c.id) ?? 0));
+          onSave(amount, changed);
         }}
       >
         <label>
@@ -1344,8 +1420,30 @@ function BudgetDialog({
           {!valid && <small className="error">{yen(BUDGET_MAX)}までで入れてください</small>}
         </label>
         <p className="muted small">共通のお財布に毎月入れる額を入れると、今月の残りが出ます。空にすると予算を決めない設定になります。前の月の予算は変わりません。</p>
+        <fieldset className="cat-budgets">
+          <legend>カテゴリごと（円）</legend>
+          <p className="muted small">決めたいカテゴリだけ入れます。超えると「今月」のカテゴリ別が赤くなります。</p>
+          {categories.map((c) => {
+            const ok = catAmount(c.id) <= BUDGET_MAX;
+            return (
+              <label key={c.id} className="cat-budget-row">
+                <span className={`dot ${colorOf(c.id)}`} aria-hidden="true" />
+                <span className="cat-budget-name">{c.name}</span>
+                <input
+                  value={catText[c.id] ?? ""}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="決めない"
+                  aria-invalid={!ok}
+                  onChange={(e) => setCatText((t) => ({ ...t, [c.id]: e.target.value }))}
+                />
+              </label>
+            );
+          })}
+          {!catsValid && <small className="error">{yen(BUDGET_MAX)}までで入れてください</small>}
+        </fieldset>
         <div className="row end">
-          <button className="btn primary" type="submit" disabled={!valid}>
+          <button className="btn primary" type="submit" disabled={!valid || !catsValid}>
             保存
           </button>
         </div>

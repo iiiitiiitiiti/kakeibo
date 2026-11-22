@@ -18,13 +18,16 @@ import {
 } from "firebase/firestore";
 import { getDb } from "./firebase";
 import {
+  categoryBudgetId,
   isDate,
   isMonth,
   mergeCategories,
   monthRange,
   OTHER_ID,
+  parseCategoryBudgetId,
   RECENT_COUNT,
   type Budget,
+  type CategoryBudget,
   type Category,
   type Entry,
 } from "./model";
@@ -73,6 +76,7 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
   const [monthEntries, setMonthEntries] = useState<Entry[]>([]);
   const [storedCats, setStoredCats] = useState<Category[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([]);
   const [state, setState] = useState<LoadState>("loading");
   /** 保存先の今の中身を一度でも受け取ったか（手元の写しだけではない） */
   const [synced, setSynced] = useState(false);
@@ -85,6 +89,7 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
       entries: collection(db, "books", bookKey, "entries"),
       categories: collection(db, "books", bookKey, "categories"),
       budgets: collection(db, "books", bookKey, "budgets"),
+      catBudgets: collection(db, "books", bookKey, "catBudgets"),
     };
   }, [bookKey]);
 
@@ -127,11 +132,25 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
         ),
       fail,
     );
+    // カテゴリごとの予算は読めなくても家計簿そのものは使えるので、読めないときは「予算なし」として続ける
+    const unCatBudgets = onSnapshot(
+      refs.catBudgets,
+      (snap) =>
+        setCategoryBudgets(
+          snap.docs.flatMap((d) => {
+            const id = parseCategoryBudgetId(d.id);
+            const amount: unknown = d.get("amount");
+            return id && typeof amount === "number" ? [{ ...id, amount }] : [];
+          }),
+        ),
+      (e) => console.error("カテゴリごとの予算を読めませんでした", e),
+    );
     return () => {
       window.clearTimeout(timer);
       unRecent();
       unCats();
       unBudgets();
+      unCatBudgets();
     };
   }, [refs]);
 
@@ -144,7 +163,8 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
       { includeMetadataChanges: true },
       (snap) => {
         setMonthEntries(snap.docs.map(docToEntry));
-        setLoadedMonth(month);
+        // 手元の写しが空なだけでは「記録なし」と決めない（電波が無い所で、見たことのない月を開いたとき）
+        setLoadedMonth(snap.metadata.fromCache && snap.empty ? null : month);
       },
       (e) => console.error("その月の記録を読めませんでした", e),
     );
@@ -222,6 +242,10 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
       setBudget(month: string, amount: number) {
         guard(setDoc(doc(refs.budgets, month), { amount }));
       },
+      /** そのカテゴリの、その月から先の予算を決める。0 は「決めない」 */
+      setCategoryBudget(month: string, categoryId: string, amount: number) {
+        guard(setDoc(doc(refs.catBudgets, categoryBudgetId(month, categoryId)), { amount }));
+      },
     }),
     [refs, me, onWriteError],
   );
@@ -236,6 +260,7 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
     monthEntries: monthReady ? monthEntries : NO_ENTRIES,
     categories,
     budgets,
+    categoryBudgets,
     ...actions,
   };
 }

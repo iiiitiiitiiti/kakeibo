@@ -434,6 +434,39 @@ input::placeholder {
 .fields p {
   margin: 0;
 }
+.cat-budgets {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4) 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+.cat-budgets legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+  font-size: var(--font-s);
+  font-weight: 600;
+  color: var(--muted);
+}
+.fields .cat-budget-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 9em;
+  align-items: center;
+  gap: var(--space-2);
+}
+.fields .cat-budget-row > .cat-budget-name {
+  overflow: hidden;
+  font-size: var(--font-m);
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cat-budget-row input {
+  text-align: right;
+}
 
 /* ---------- 上の帯 ---------- */
 
@@ -863,6 +896,27 @@ input::placeholder {
   background: transparent;
   text-align: left;
   cursor: pointer;
+}
+/* 予算を決めたカテゴリは、行の下に予算と残りを出す */
+.cat-total:has(.cat-budget) {
+  row-gap: 0;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+.cat-budget {
+  grid-column: 1 / -1;
+  font-size: var(--font-xs);
+  color: var(--muted);
+}
+.cat-total.over .bar-value,
+.cat-total.over .cat-budget {
+  color: var(--danger);
+}
+.bar .over {
+  background: var(--danger);
+}
+.by-cat ul.mixed .bar:not(.of-budget) {
+  background: transparent;
 }
 .cat-total svg {
   width: 18px;

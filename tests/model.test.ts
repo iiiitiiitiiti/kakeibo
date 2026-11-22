@@ -4,6 +4,9 @@ import {
   calendarWeeks,
   shortYen,
   budgetFor,
+  categoryBudgetId,
+  categoryBudgetsFor,
+  parseCategoryBudgetId,
   categoryOf,
   DEFAULT_CATEGORIES,
   groupByDate,
@@ -255,5 +258,30 @@ describe("calcKeyFromKeyboard", () => {
     expect(calcKeyFromKeyboard("a")).toBeNull();
     expect(calcKeyFromKeyboard("Enter")).toBeNull();
     expect(calcKeyFromKeyboard("Tab")).toBeNull();
+  });
+});
+
+describe("カテゴリごとの予算", () => {
+  const list = [
+    { month: "2026-09", categoryId: "food", amount: 30000 },
+    { month: "2026-11", categoryId: "food", amount: 40000 },
+    { month: "2026-10", categoryId: "daily", amount: 8000 },
+    { month: "2026-11", categoryId: "daily", amount: 0 },
+  ];
+  it("カテゴリごとに、その月かそれより前で一番新しい額を使う", () => {
+    expect([...categoryBudgetsFor("2026-10", list)]).toEqual([
+      ["food", 30000],
+      ["daily", 8000],
+    ]);
+    expect([...categoryBudgetsFor("2026-08", list)]).toEqual([]);
+  });
+  it("0 にした月から先は決めていない扱い", () => {
+    expect([...categoryBudgetsFor("2026-12", list)]).toEqual([["food", 40000]]);
+  });
+  it("文書の名前を月とカテゴリに分ける", () => {
+    expect(parseCategoryBudgetId(categoryBudgetId("2026-11", "food"))).toEqual({ month: "2026-11", categoryId: "food" });
+    expect(parseCategoryBudgetId("2026-13_food")).toBeNull();
+    expect(parseCategoryBudgetId("2026-11_")).toBeNull();
+    expect(parseCategoryBudgetId("2026-11_a/b")).toBeNull();
   });
 });
