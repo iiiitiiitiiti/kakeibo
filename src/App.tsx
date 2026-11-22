@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -341,22 +342,39 @@ function BookScreen({
   // 閉じるときは下へ引っ込む動きを見せてから外す
   const [closing, setClosing] = useState(false);
   const opener = useRef<HTMLElement | null>(null);
+  // メニューから予算の画面へ、のように続けて開くときの次の画面。今の画面を引っ込めてから出す
+  // （いきなり入れ替えると、今の画面が動きなしで消え、後ろの暗がりも一度消えてちらつく）
+  const [queued, setQueued] = useState<NonNullable<DialogState> | null>(null);
+  const [swappedIn, setSwappedIn] = useState(false);
   const openDialog = (d: NonNullable<DialogState>) => {
-    // 別の画面から続けて開いたときも、最初に押した場所を覚えておく
-    if (!dialog) opener.current = document.activeElement as HTMLElement | null;
+    if (dialog) {
+      setQueued(d);
+      setClosing(true);
+      return;
+    }
+    // 続けて開いたときも戻り先が最初に押した場所になるよう、何も開いていないときだけ覚える
+    opener.current = document.activeElement as HTMLElement | null;
     setClosing(false);
+    setSwappedIn(false);
     setDialog(d);
   };
-  const closeDialog = useCallback(() => setClosing(true), []);
+  const closeDialog = useCallback(() => {
+    setQueued(null);
+    setClosing(true);
+  }, []);
   const dialogCtx = useMemo(
     () => ({
       closing,
+      swapOut: closing && queued !== null,
+      swapIn: swappedIn,
       onClosed: () => {
         setClosing(false);
-        setDialog(null);
+        setDialog(queued);
+        setQueued(null);
+        setSwappedIn(queued !== null);
       },
     }),
-    [closing],
+    [closing, queued, swappedIn],
   );
   // 閉じ終わって画面から外れたあとに、開く前に押した場所へ戻す（開いている間は外へ移れない）
   useEffect(() => {
@@ -977,6 +995,7 @@ function MonthTab({
   const weeks = calendarWeeks(month, entries);
   const total = sum(entries);
   const totals = totalsByCategory(entries, categories);
+  const topTotal = Math.max(1, ...totals.map((t) => t.total));
   // 月の記録を全部並べることはしない。カレンダーで選んだ日の分だけ出す（2026-11-22 ユーザー依頼）
   const dayEntries = selected ? (groupByDate(entries.filter((e) => e.date === selected))[0]?.entries ?? []) : [];
   const daysRef = useRef<HTMLElement>(null);
@@ -1085,7 +1104,7 @@ function MonthTab({
                     <span className={limit !== null ? "bar of-budget" : "bar"}>
                       <span
                         className={over ? "over" : colorOf(t.category.id)}
-                        style={{ width: `${(limit !== null ? Math.min(1, t.total / limit) : t.total / totals[0].total) * 100}%` }}
+                        style={{ width: `${(limit !== null ? Math.min(1, t.total / limit) : t.total / topTotal) * 100}%` }}
                       />
                     </span>
                     <span className="bar-value">{yen(t.total)}</span>
@@ -1203,8 +1222,17 @@ const payerOf = (e: Entry): string => (e.settled !== undefined ? (e.paidBy ?? ""
 /* ---------- ダイアログ ---------- */
 
 /** 閉じる動きの最中かどうかと、動きが終わったときに呼ぶもの。BookScreen が渡す */
-const DialogContext = createContext<{ closing: boolean; onClosed: () => void }>({
+const DialogContext = createContext<{
+  closing: boolean;
+  /** 次の画面へ移るために閉じている（後ろの暗がりは残す） */
+  swapOut: boolean;
+  /** 前の画面から移ってきた（後ろの暗がりはもう出ている） */
+  swapIn: boolean;
+  onClosed: () => void;
+}>({
   closing: false,
+  swapOut: false,
+  swapIn: false,
   onClosed: () => {},
 });
 /** 閉じる動きの長さ（styles.css の .sheet.closing と揃える） */
@@ -1212,11 +1240,15 @@ const SHEET_CLOSE_MS = 220;
 
 function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const { closing, onClosed } = useContext(DialogContext);
-  useEffect(() => {
+  const { closing, swapOut, swapIn, onClosed } = useContext(DialogContext);
+  // 描く前に開く。描いたあとだと、前の画面から移るときに暗がりの無い1コマが挟まる
+  useLayoutEffect(() => {
     ref.current?.showModal();
-    // showModal は最初のボタン（閉じる）へ移るので、入力欄から始めたい画面はそこへ移し直す
-    ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    // showModal は最初のボタン（閉じる）へ移るので、入力欄から始めたい画面はそこへ移し直す。
+    // 指で使う端末では移さない。開く動きの途中でキーボードが出て、画面が押し上げられるため
+    if (window.matchMedia?.("(pointer: fine)").matches) {
+      ref.current?.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    }
   }, []);
   useEffect(() => {
     if (!closing) return;
@@ -1226,7 +1258,9 @@ function Dialog({ title, onClose, children }: { title: string; onClose: () => vo
   return (
     <dialog
       ref={ref}
-      className={closing ? "sheet closing" : "sheet"}
+      className={["sheet", closing ? "closing" : "", swapOut ? "swap-out" : "", swapIn ? "swap-in" : ""]
+        .filter(Boolean)
+        .join(" ")}
       aria-labelledby="dlg-title"
       onCancel={(e) => {
         e.preventDefault();

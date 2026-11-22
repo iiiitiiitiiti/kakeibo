@@ -426,12 +426,13 @@ describe("今月", () => {
     );
     await click(document.querySelectorAll(".tabs button")[1]);
     const rows = [...document.querySelectorAll<HTMLButtonElement>(".cat-total")];
-    expect(rows.map((r) => r.querySelector(".bar-label")!.textContent)).toEqual(["日用品", "食費"]);
-    expect(rows[0].getAttribute("aria-expanded")).toBe("false");
+    // 多い順ではなくカテゴリの並び順（額は日用品のほうが多い）
+    expect(rows.map((r) => r.querySelector(".bar-label")!.textContent)).toEqual(["食費", "日用品"]);
+    expect(rows[1].getAttribute("aria-expanded")).toBe("false");
 
-    await click(rows[0]);
-    expect(rows[0].getAttribute("aria-expanded")).toBe("true");
-    const fold = rows[0].nextElementSibling!;
+    await click(rows[1]);
+    expect(rows[1].getAttribute("aria-expanded")).toBe("true");
+    const fold = rows[1].nextElementSibling!;
     expect(fold.className).toBe("fold open");
     expect(fold.textContent).toContain("ニトリ");
     expect(fold.textContent).not.toContain("セブン");
@@ -486,6 +487,12 @@ describe("今月", () => {
     );
     await click($('[aria-label="メニュー"]'));
     await click([...document.querySelectorAll("dialog button")].find((b) => b.textContent!.includes("月の予算"))!);
+    // メニューを引っ込めてから次の画面を出す。その間、後ろの暗がりは出したまま
+    expect($("dialog h2").textContent).toBe("メニュー");
+    expect($("dialog").className).toBe("sheet closing swap-out");
+    await act(() => vi.advanceTimersByTime(300));
+    expect($("dialog h2").textContent).toBe("月の予算");
+    expect($("dialog").className).toBe("sheet swap-in");
     const input = (name: string) =>
       [...document.querySelectorAll<HTMLElement>(".cat-budget-row")]
         .find((r) => r.querySelector(".cat-budget-name")!.textContent === name)!
@@ -508,6 +515,12 @@ describe("今月", () => {
       ["2026-11", "eatout", 12000],
     ]);
     expect($(".toast").textContent).toContain("カテゴリの予算を保存しました");
+
+    // 閉じたあとにもう一度開くときは、ふつうの開き方に戻る
+    await act(() => vi.advanceTimersByTime(300));
+    expect(document.querySelector("dialog")).toBeNull();
+    await click($('[aria-label="メニュー"]'));
+    expect($("dialog").className).toBe("sheet");
   });
 
   it("予算の画面を開いたあとで予算が届いても、触っていない欄を空で上書きしない", async () => {
@@ -518,6 +531,8 @@ describe("今月", () => {
     const first = render(makeBook({ budgets: [] }));
     await click($('[aria-label="メニュー"]'));
     await click([...document.querySelectorAll("dialog button")].find((b) => b.textContent!.includes("月の予算"))!);
+    await act(() => vi.advanceTimersByTime(300));
+    expect($("dialog h2").textContent).toBe("月の予算");
     // 開いている間に、全体の予算とカテゴリの予算が届く（相手が決めた）
     const late = makeBook({
       budgets: [{ month: "2026-11", amount: 100000 }],

@@ -378,6 +378,8 @@ input::placeholder {
   color: var(--text);
   box-shadow: var(--shadow);
   animation: sheet-up var(--t-slow) var(--ease-out);
+  /* 中身を端まで送っても、後ろの画面は動かさない */
+  overscroll-behavior: contain;
 }
 .sheet::backdrop {
   background: var(--backdrop);
@@ -392,6 +394,11 @@ input::placeholder {
 .sheet.closing::backdrop {
   animation: fade-out var(--t) ease forwards;
 }
+/* メニューから別の画面へ移る間は、後ろの暗がりを出したままにする */
+.sheet.swap-out::backdrop,
+.sheet.swap-in::backdrop {
+  animation: none;
+}
 @media (min-width: 640px) {
   .sheet {
     margin: auto;
@@ -403,13 +410,19 @@ input::placeholder {
   }
 }
 .sheet-inner {
-  padding: var(--space-4) var(--space-6) calc(var(--space-6) + env(safe-area-inset-bottom));
+  padding: 0 var(--space-6) calc(var(--space-6) + env(safe-area-inset-bottom));
 }
+/* 長い画面を下へ送っても、名前と「閉じる」は上に残す */
 .sheet-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--space-2);
+  margin: 0 calc(var(--space-6) * -1) var(--space-2);
+  padding: var(--space-4) var(--space-6) var(--space-2);
+  background: var(--surface);
 }
 .sheet-head h2 {
   margin: 0;

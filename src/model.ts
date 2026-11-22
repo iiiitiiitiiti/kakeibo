@@ -199,7 +199,7 @@ export interface CategoryTotal {
   total: number;
 }
 
-/** カテゴリごとの合計（多い順） */
+/** カテゴリごとの合計（カテゴリの並び順。記録のあるカテゴリだけ） */
 export function totalsByCategory(entries: readonly Entry[], cats: readonly Category[]): CategoryTotal[] {
   const map = new Map<string, CategoryTotal>();
   for (const e of entries) {
@@ -208,7 +208,9 @@ export function totalsByCategory(entries: readonly Entry[], cats: readonly Categ
     t.total += e.amount;
     map.set(c.id, t);
   }
-  return [...map.values()].sort((a, b) => b.total - a.total || a.category.order - b.category.order);
+  return [...map.values()].sort(
+    (a, b) => a.category.order - b.category.order || a.category.name.localeCompare(b.category.name, "ja"),
+  );
 }
 
 export const sum = (entries: readonly Entry[]): number => entries.reduce((n, e) => n + e.amount, 0);

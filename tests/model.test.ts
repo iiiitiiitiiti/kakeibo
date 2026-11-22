@@ -156,11 +156,11 @@ describe("集計", () => {
     entry({ amount: 200, categoryId: "food", date: "2026-11-02", createdAt: 3 }),
     entry({ amount: 50, categoryId: "gone", date: "2026-11-02", createdAt: 4 }),
   ];
-  it("カテゴリ別は多い順、消えたカテゴリはその他にまとめる", () => {
+  it("カテゴリ別はカテゴリの並び順、消えたカテゴリはその他にまとめる", () => {
     const t = totalsByCategory(list, cats);
     expect(t.map((x) => [x.category.id, x.total])).toEqual([
-      ["eatout", 1000],
       ["food", 500],
+      ["eatout", 1000],
       [OTHER_ID, 50],
     ]);
   });
