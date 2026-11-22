@@ -239,6 +239,7 @@ describe("今月", () => {
     render(makeBook({ monthReady: false, monthEntries: [] }));
     await click(document.querySelectorAll(".tabs button")[1]);
     expect($(".summary-big").textContent).toBe("…");
+    await click($(".cal-day.today"));
     expect($(".days .muted").textContent).toBe("読み込んでいます…");
   });
 
@@ -269,13 +270,22 @@ describe("今月", () => {
     const book = render();
     await click(document.querySelectorAll(".tabs button")[1]);
     expect(document.querySelector(".day-add")).toBeNull();
+    // 月の記録は並べない。日を選ぶまでは案内だけ
+    expect(document.querySelector(".days .entries")).toBeNull();
+    expect($(".days").textContent).toBe("日付を押すと、その日の記録が出ます");
 
     const day = (n: string) => [...document.querySelectorAll(".cal-day")].find((b) => b.querySelector(".cal-num")?.textContent === n)!;
     // 先の日には出さない
     await click(day("25"));
     expect(document.querySelector(".day-add")).toBeNull();
 
+    await click(day("22"));
+    expect($(".days-head").textContent).toBe("11月22日(日)¥30,000");
+    expect(document.querySelectorAll(".days .entry-row, .days .entries > li").length).toBe(1);
+
     await click(day("20"));
+    expect($(".days-head").textContent).toBe("11月20日(金)");
+    expect($(".days .muted").textContent).toBe("この日の記録はありません");
     expect($(".day-add").textContent).toBe("この日に記録する");
     await click($(".day-add"));
     expect(window.scrollTo).toHaveBeenCalledWith(0, 0);

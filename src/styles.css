@@ -696,7 +696,10 @@ input::placeholder {
 /* ---------- 記録の一覧 ---------- */
 
 .recent,
-.days,
+.days {
+  margin-top: var(--space-6);
+}
+/* 畳んだときに高さが残らないよう、上の間隔は外側でなく内側に取る */
 .by-cat {
   min-height: 0;
   padding-top: var(--space-6);
@@ -913,23 +916,24 @@ input::placeholder {
   background: color-mix(in srgb, var(--bg) 60%, var(--surface));
 }
 
-.day + .day {
-  margin-top: var(--space-4);
-}
-.day h3 {
-  display: flex;
-  justify-content: space-between;
-  margin: 0 var(--space-1) var(--space-2);
-  font-size: var(--font-s);
-  color: var(--muted);
+.days {
+  /* 上の帯に隠れない位置まで送る */
+  scroll-margin: var(--space-16) 0 var(--space-4);
 }
 .days-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-height: 36px;
-  margin-bottom: var(--space-2);
+  margin: 0 var(--space-1) var(--space-2);
+  font-size: var(--font-s);
+  font-weight: 700;
+  color: var(--muted);
+}
+.days-hint {
+  margin: 0;
+  font-size: var(--font-s);
+  text-align: center;
 }
 .day-add {
   margin-bottom: var(--space-3);
@@ -1229,8 +1233,11 @@ input::placeholder {
   .month-body .by-cat-fold {
     grid-area: bycat;
   }
+  /* 左の列を下まで送っても、選んだ日の記録が見える所に残るようにする */
   .month-body .days {
     grid-area: days;
+    position: sticky;
+    top: var(--space-16);
     margin-top: var(--space-2);
   }
   .month-nav {

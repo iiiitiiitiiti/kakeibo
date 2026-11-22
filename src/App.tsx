@@ -881,7 +881,13 @@ function MonthTab({
   const weeks = calendarWeeks(month, entries);
   const total = sum(entries);
   const totals = totalsByCategory(entries, categories);
-  const days = groupByDate(selected ? entries.filter((e) => e.date === selected) : entries);
+  // 月の記録を全部並べることはしない。カレンダーで選んだ日の分だけ出す（2026-11-22 ユーザー依頼）
+  const dayEntries = selected ? (groupByDate(entries.filter((e) => e.date === selected))[0]?.entries ?? []) : [];
+  const daysRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    // 選んだ日の記録はカレンダーの下に出るので、画面の外なら見える所まで送る
+    if (selected) daysRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [selected]);
   const left = budget !== null ? budget - total : null;
   const ratio = budget ? Math.min(1, total / budget) : 0;
   const pace = left !== null ? paceFor(month, today, left) : null;
@@ -1034,33 +1040,25 @@ function MonthTab({
         ))}
       </section>
 
-      <section className="days" aria-labelledby="days-h">
-        <div className="days-head">
-          <h2 id="days-h">{selected ? "この日の記録" : "記録"}</h2>
-          {selected && (
-            <button className="btn small" type="button" onClick={() => setSelected(null)}>
-              月の全部を見る
-            </button>
-          )}
-        </div>
-        {selected && selected <= today && (
-          <button className="btn wide day-add" type="button" onClick={() => onRecordOn(selected)}>
-            この日に記録する
-          </button>
-        )}
-        {days.length === 0 ? (
-          <p className="muted">
-            {!ready ? "読み込んでいます…" : selected ? "この日の記録はありません" : "この月の記録はまだありません"}
-          </p>
+      <section className="days" aria-label="選んだ日の記録" ref={daysRef}>
+        {!selected ? (
+          <p className="muted days-hint">日付を押すと、その日の記録が出ます</p>
         ) : (
-          days.map((d) => (
-            <div key={d.date} className="day">
-              <h3>
-                <span>{dateLabel(d.date)}</span>
-                <span>{yen(d.total)}</span>
-              </h3>
+          <>
+            <div className="days-head">
+              <h2>{dateLabel(selected, today)}</h2>
+              {dayEntries.length > 0 && <span>{yen(sum(dayEntries))}</span>}
+            </div>
+            {selected <= today && (
+              <button className="btn wide day-add" type="button" onClick={() => onRecordOn(selected)}>
+                この日に記録する
+              </button>
+            )}
+            {dayEntries.length === 0 ? (
+              <p className="muted">{ready ? "この日の記録はありません" : "読み込んでいます…"}</p>
+            ) : (
               <ul className="entries">
-                {d.entries.map((e) => (
+                {dayEntries.map((e) => (
                   <EntryRow
                     key={e.id}
                     entry={e}
@@ -1071,8 +1069,8 @@ function MonthTab({
                   />
                 ))}
               </ul>
-            </div>
-          ))
+            )}
+          </>
         )}
       </section>
 
