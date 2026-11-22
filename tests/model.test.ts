@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   addMonths,
+  calendarWeeks,
+  shortYen,
   budgetFor,
   categoryOf,
   DEFAULT_CATEGORIES,
@@ -134,5 +136,33 @@ describe("集計", () => {
   it("円の表示", () => {
     expect(yen(1234567)).toBe("¥1,234,567");
     expect(yen(-500)).toBe("−¥500");
+  });
+});
+
+describe("calendarWeeks", () => {
+  it("2026年11月は日曜はじまりで5行、合計と件数が入る", () => {
+    const w = calendarWeeks("2026-11", [
+      entry({ amount: 300, date: "2026-11-01" }),
+      entry({ amount: 200, date: "2026-11-01" }),
+      entry({ amount: 900, date: "2026-11-30" }),
+    ]);
+    expect(w.length).toBe(5);
+    expect(w[0][0]).toMatchObject({ date: "2026-11-01", total: 500, count: 2 });
+    expect(w[4][1]).toMatchObject({ date: "2026-11-30", total: 900 });
+    expect(w[4][2].date).toBeNull();
+  });
+  it("前の空きを埋める（2026年10月1日は木曜）", () => {
+    const w = calendarWeeks("2026-10", []);
+    expect(w[0].slice(0, 4).map((c) => c.date)).toEqual([null, null, null, null]);
+    expect(w[0][4].date).toBe("2026-10-01");
+  });
+});
+
+describe("shortYen", () => {
+  it("1万未満はそのまま、1万以上は万で", () => {
+    expect(shortYen(9800)).toBe("9,800");
+    expect(shortYen(12800)).toBe("1.2万");
+    expect(shortYen(30000)).toBe("3万");
+    expect(shortYen(150000)).toBe("15万");
   });
 });

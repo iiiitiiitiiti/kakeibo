@@ -4,6 +4,7 @@ import {
   AMOUNT_MAX,
   BUDGET_MAX,
   budgetFor,
+  calendarWeeks,
   CAT_NAME_MAX,
   categoryOf,
   cleanText,
@@ -18,6 +19,7 @@ import {
   nextOrder,
   PERSON_MAX,
   pushDigit,
+  shortYen,
   sum,
   totalsByCategory,
   yen,
@@ -548,9 +550,18 @@ function MonthTab({
   onBudget: () => void;
 }) {
   const thisMonth = monthOf(localDate());
+  const today = localDate();
+  const [selected, setSelected] = useState<string | null>(null);
+  // 月を変えたら日の選択を外す
+  const [shownMonth, setShownMonth] = useState(month);
+  if (shownMonth !== month) {
+    setShownMonth(month);
+    setSelected(null);
+  }
+  const weeks = calendarWeeks(month, entries);
   const total = sum(entries);
   const totals = totalsByCategory(entries, categories);
-  const days = groupByDate(entries);
+  const days = groupByDate(selected ? entries.filter((e) => e.date === selected) : entries);
   const left = budget !== null ? budget - total : null;
   const ratio = budget ? Math.min(1, total / budget) : 0;
 
@@ -604,27 +615,52 @@ function MonthTab({
         )}
       </section>
 
-      {totals.length > 0 && (
-        <section className="by-cat" aria-labelledby="bycat-h">
-          <h2 id="bycat-h">カテゴリ別</h2>
-          <ul>
-            {totals.map((t) => (
-              <li key={t.category.id}>
-                <span className="bar-label">{t.category.name}</span>
-                <span className="bar">
-                  <span className={colorOf(t.category.id)} style={{ width: `${(t.total / totals[0].total) * 100}%` }} />
-                </span>
-                <span className="bar-value">{yen(t.total)}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <section className="calendar" aria-label={`${monthLabel(month)}のカレンダー`}>
+        <div className="cal-head" aria-hidden="true">
+          {["日", "月", "火", "水", "木", "金", "土"].map((w) => (
+            <span key={w}>{w}</span>
+          ))}
+        </div>
+        {weeks.map((week, i) => (
+          <div className="cal-week" key={i}>
+            {week.map((c, j) =>
+              c.date ? (
+                <button
+                  key={c.date}
+                  type="button"
+                  className={[
+                    "cal-day",
+                    c.date === today ? "today" : "",
+                    c.date === selected ? "on" : "",
+                    c.count ? "has" : "",
+                    c.date > today ? "future" : "",
+                  ].join(" ")}
+                  aria-pressed={c.date === selected}
+                  aria-label={`${dateLabel(c.date)} ${c.count ? `${yen(c.total)}・${c.count}件` : "記録なし"}`}
+                  onClick={() => setSelected(c.date === selected ? null : c.date)}
+                >
+                  <span className="cal-num">{c.day}</span>
+                  {c.count > 0 && <span className="cal-total">{shortYen(c.total)}</span>}
+                </button>
+              ) : (
+                <span key={`e${j}`} className="cal-day empty" />
+              ),
+            )}
+          </div>
+        ))}
+      </section>
 
       <section className="days" aria-labelledby="days-h">
-        <h2 id="days-h">記録</h2>
+        <div className="days-head">
+          <h2 id="days-h">{selected ? "この日の記録" : "記録"}</h2>
+          {selected && (
+            <button className="btn small" type="button" onClick={() => setSelected(null)}>
+              月の全部を見る
+            </button>
+          )}
+        </div>
         {days.length === 0 ? (
-          <p className="muted">この月の記録はまだありません</p>
+          <p className="muted">{selected ? "この日の記録はありません" : "この月の記録はまだありません"}</p>
         ) : (
           days.map((d) => (
             <div key={d.date} className="day">
@@ -647,6 +683,23 @@ function MonthTab({
           ))
         )}
       </section>
+
+      {totals.length > 0 && (
+        <section className="by-cat" aria-labelledby="bycat-h">
+          <h2 id="bycat-h">カテゴリ別</h2>
+          <ul>
+            {totals.map((t) => (
+              <li key={t.category.id}>
+                <span className="bar-label">{t.category.name}</span>
+                <span className="bar">
+                  <span className={colorOf(t.category.id)} style={{ width: `${(t.total / totals[0].total) * 100}%` }} />
+                </span>
+                <span className="bar-value">{yen(t.total)}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </main>
   );
 }

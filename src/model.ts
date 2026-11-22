@@ -197,3 +197,43 @@ export function keyFromHash(hash: string): string | null {
   const m = /(?:^#|&)k=([0-9a-f]{32})(?:&|$)/.exec(hash);
   return m ? m[1] : null;
 }
+
+export interface CalendarCell {
+  /** YYYY-MM-DD。月の前後を埋める空きの日は null */
+  date: string | null;
+  day: number;
+  total: number;
+  count: number;
+}
+
+/** 月のカレンダー（日曜はじまり、7日ずつの行）。各日にその日の合計と件数を入れる */
+export function calendarWeeks(month: string, entries: readonly Entry[]): CalendarCell[][] {
+  const [y, m] = month.split("-").map(Number);
+  const first = new Date(y, m - 1, 1).getDay();
+  const days = new Date(y, m, 0).getDate();
+  const byDate = new Map<string, { total: number; count: number }>();
+  for (const e of entries) {
+    const t = byDate.get(e.date) ?? { total: 0, count: 0 };
+    t.total += e.amount;
+    t.count += 1;
+    byDate.set(e.date, t);
+  }
+  const cells: CalendarCell[] = [];
+  for (let i = 0; i < first; i++) cells.push({ date: null, day: 0, total: 0, count: 0 });
+  for (let d = 1; d <= days; d++) {
+    const date = `${month}-${String(d).padStart(2, "0")}`;
+    const t = byDate.get(date);
+    cells.push({ date, day: d, total: t?.total ?? 0, count: t?.count ?? 0 });
+  }
+  while (cells.length % 7) cells.push({ date: null, day: 0, total: 0, count: 0 });
+  const weeks: CalendarCell[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
+/** カレンダーのマスに入れる短い金額（1万以上は「1.2万」） */
+export function shortYen(n: number): string {
+  if (n >= 100000) return `${Math.round(n / 10000)}万`;
+  if (n >= 10000) return `${(Math.floor(n / 1000) / 10).toFixed(1).replace(/\.0$/, "")}万`;
+  return yenFmt.format(n);
+}
