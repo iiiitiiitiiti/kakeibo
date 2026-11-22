@@ -7,6 +7,8 @@ import {
   categoryBudgetId,
   categoryBudgetsFor,
   parseCategoryBudgetId,
+  payOf,
+  unsettledByPerson,
   categoryOf,
   DEFAULT_CATEGORIES,
   groupByDate,
@@ -283,5 +285,38 @@ describe("カテゴリごとの予算", () => {
     expect(parseCategoryBudgetId("2026-13_food")).toBeNull();
     expect(parseCategoryBudgetId("2026-11_")).toBeNull();
     expect(parseCategoryBudgetId("2026-11_a/b")).toBeNull();
+  });
+});
+
+describe("未精算", () => {
+  const e = (p: Partial<Entry>): Entry => ({
+    id: Math.random().toString(36),
+    amount: 100,
+    categoryId: "food",
+    date: "2026-11-22",
+    memo: "",
+    addedBy: "",
+    createdAt: 0,
+    ...p,
+  });
+  it("どの財布で払ったかを読み分ける", () => {
+    expect(payOf(e({}))).toBe("shared");
+    expect(payOf(e({ settled: false }))).toBe("unsettled");
+    expect(payOf(e({ settled: true }))).toBe("settled");
+  });
+  it("未精算だけを払った人ごとにまとめ、額の多い人から並べる", () => {
+    const people = unsettledByPerson([
+      e({ amount: 300, settled: false, paidBy: "たろう" }),
+      e({ amount: 900, settled: false, paidBy: "はなこ", date: "2026-11-21" }),
+      e({ amount: 200, settled: false, paidBy: "はなこ", date: "2026-11-03" }),
+      e({ amount: 5000, settled: true, paidBy: "たろう" }),
+      e({ amount: 7000 }),
+      e({ amount: 50, settled: false }),
+    ]);
+    expect(people.map((p) => [p.name, p.total, p.entries.map((x) => x.amount)])).toEqual([
+      ["はなこ", 1100, [200, 900]],
+      ["たろう", 300, [300]],
+      ["", 50, [50]],
+    ]);
   });
 });

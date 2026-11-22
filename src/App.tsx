@@ -32,6 +32,7 @@ import {
   monthOf,
   nextOrder,
   paceFor,
+  payOf,
   PERSON_MAX,
   calcKeyFromKeyboard,
   calcPress,
@@ -42,11 +43,13 @@ import {
   shortYen,
   sum,
   totalsByCategory,
+  unsettledByPerson,
   yen,
   type CalcKey,
   type Category,
   type Operator,
   type Entry,
+  type Pay,
 } from "./model";
 import { useBook, type NewEntry } from "./useBook";
 
@@ -309,6 +312,7 @@ interface ToastState {
 type Tab = "record" | "month";
 type DialogState =
   | { kind: "edit"; entry: Entry }
+  | { kind: "unsettled" }
   | { kind: "menu" }
   | { kind: "budget" }
   | { kind: "categories" }
@@ -485,7 +489,11 @@ function BookScreen({
                     : left !== null
                       ? `今月の残り ${yen(left)}`
                       : undefined;
-            showToast(`${cat.name} ${yen(e.amount)} を記録`, { label: "取り消す", run: () => book.remove(id) }, note);
+            showToast(
+              `${cat.name} ${yen(e.amount)} を${e.pay === "unsettled" ? "未精算で" : ""}記録`,
+              { label: "取り消す", run: () => book.remove(id) },
+              note,
+            );
           }}
           onOpen={(entry) => openDialog({ kind: "edit", entry })}
           onEditCategories={() => openDialog({ kind: "categories" })}
@@ -501,10 +509,12 @@ function BookScreen({
           categories={categories}
           budget={budget}
           catBudgets={catBudgets}
+          unsettledTotal={sum(book.unsettled)}
           colorOf={colorOf}
           isFresh={isFresh}
           onOpen={(entry) => openDialog({ kind: "edit", entry })}
           onBudget={() => openDialog({ kind: "budget" })}
+          onUnsettled={() => openDialog({ kind: "unsettled" })}
           onRecordOn={(d) => {
             setStartDate(d);
             setPickedMonth(null);
@@ -521,9 +531,10 @@ function BookScreen({
           <EditDialog
             entry={dialog.entry}
             categories={categories}
+            me={me}
             onClose={() => closeDialog()}
             onSave={(e) => {
-              book.update(dialog.entry.id, e);
+              book.update(dialog.entry.id, e, payerOf(dialog.entry));
               closeDialog();
               showToast("直しました");
             }}
@@ -533,12 +544,31 @@ function BookScreen({
             }}
           />
         )}
+        {dialog?.kind === "unsettled" && (
+          <UnsettledDialog
+            entries={book.unsettled}
+            categories={categories}
+            colorOf={colorOf}
+            onClose={() => closeDialog()}
+            onSettle={(list) => {
+              const ids = list.map((e) => e.id);
+              book.setSettled(ids, true);
+              // お知らせと「元に戻す」は開いた画面の下に隠れるので、閉じてから出す
+              closeDialog();
+              showToast(`${yen(sum(list))} を精算済みにしました`, {
+                label: "元に戻す",
+                run: () => book.setSettled(ids, false),
+              });
+            }}
+          />
+        )}
         {dialog?.kind === "menu" && (
           <MenuDialog
             me={me}
             onMe={onMe}
             onClose={() => closeDialog()}
             onToast={showToast}
+            onUnsettled={() => openDialog({ kind: "unsettled" })}
             onBudget={() => openDialog({ kind: "budget" })}
             onCategories={() => openDialog({ kind: "categories" })}
           />
@@ -552,17 +582,11 @@ function BookScreen({
             colorOf={colorOf}
             onClose={() => closeDialog()}
             onSave={(amount, changed) => {
-              const before = budgetFor(thisMonth, book.budgets) ?? 0;
-              if (amount !== before) book.setBudget(thisMonth, amount);
+              if (amount !== null) book.setBudget(thisMonth, amount);
               for (const c of changed) book.setCategoryBudget(thisMonth, c.id, c.amount);
               closeDialog();
-              showToast(
-                amount !== before || changed.length === 0
-                  ? amount > 0
-                    ? `予算を ${yen(amount)} にしました`
-                    : "予算を決めない設定にしました"
-                  : "カテゴリの予算を保存しました",
-              );
+              if (amount !== null) showToast(amount > 0 ? `予算を ${yen(amount)} にしました` : "予算を決めない設定にしました");
+              else if (changed.length > 0) showToast("カテゴリの予算を保存しました");
             }}
           />
         )}
@@ -661,6 +685,8 @@ function RecordTab({
     setPicked(v === today ? null : { date: v, on: today });
   };
   const [memo, setMemo] = useState("");
+  // 共通の財布でなく自分の財布で払った（あとで返してもらう）記録にするか
+  const [personal, setPersonal] = useState(false);
   const value = evaluate(expr);
   const amount = value ?? 0;
   const amountOk = amount >= 1 && amount <= AMOUNT_MAX;
@@ -696,11 +722,18 @@ function RecordTab({
 
   const submit = () => {
     if (!ready || !chosen) return;
-    onAdd({ amount, categoryId: chosen, date, memo: cleanText(memo, MEMO_MAX) });
+    onAdd({
+      amount,
+      categoryId: chosen,
+      date,
+      memo: cleanText(memo, MEMO_MAX),
+      ...(personal ? { pay: "unsettled" as const } : {}),
+    });
     // 日付は戻さない（過去の日の分を続けて記録するため）
     setExpr("");
     setCatId(null);
     setMemo("");
+    setPersonal(false);
   };
 
   const submitLabel =
@@ -771,6 +804,7 @@ function RecordTab({
           </label>
         </div>
 
+        <div className="memo-row">
         <label className="memo-field">
           <span className="sr-only">メモ</span>
           <input
@@ -791,6 +825,15 @@ function RecordTab({
             ))}
           </datalist>
         </label>
+          <button
+            type="button"
+            className={personal ? "pay-toggle on" : "pay-toggle"}
+            aria-pressed={personal}
+            onClick={() => setPersonal((v) => !v)}
+          >
+            自分で払った
+          </button>
+        </div>
 
         <div className="keypad" role="group" aria-label="電卓">
           {KEYS.map((k) => (
@@ -866,6 +909,7 @@ function EntryRow({
         <span className="entry-main">
           <span className="entry-cat">
             {category.name}
+            {entry.settled === false && <span className="unsettled-tag">未精算</span>}
             {entry.pending && <span className="pending">送信待ち</span>}
           </span>
           <span className="entry-sub">
@@ -890,10 +934,12 @@ function MonthTab({
   categories,
   budget,
   catBudgets,
+  unsettledTotal,
   colorOf,
   isFresh,
   onOpen,
   onBudget,
+  onUnsettled,
   onRecordOn,
 }: {
   month: string;
@@ -907,10 +953,13 @@ function MonthTab({
   budget: number | null;
   /** カテゴリの ID → その月の予算（決めているものだけ） */
   catBudgets: ReadonlyMap<string, number>;
+  /** 未精算の合計（月をまたいだ全部）。0 なら入口を出さない */
+  unsettledTotal: number;
   colorOf: (id: string) => string;
   isFresh: (id: string) => boolean;
   onOpen: (e: Entry) => void;
   onBudget: () => void;
+  onUnsettled: () => void;
   onRecordOn: (date: string) => void;
 }) {
   const thisMonth = monthOf(today);
@@ -1005,6 +1054,14 @@ function MonthTab({
           </>
         )}
       </section>
+
+      {unsettledTotal > 0 && (
+        <button className="unsettled-link" type="button" onClick={onUnsettled}>
+          <span>未精算</span>
+          <strong>{yen(unsettledTotal)}</strong>
+          <ChevronIcon dir="right" />
+        </button>
+      )}
 
       {/* 記録が届く前から場所だけ置いておき、届いたら開く（下のカレンダーが急に飛ばないように） */}
       <div className={totals.length > 0 ? "fold open by-cat-fold" : "fold by-cat-fold"} inert={totals.length === 0}>
@@ -1137,6 +1194,12 @@ function MonthTab({
   );
 }
 
+/**
+ * 自分の財布で払ったことにするときの「払った人」。もう決まっていればその人、まだなら記録を書いた人。
+ * 相手が付け忘れた記録をこちらで直しても、返す相手が入れ替わらないようにする
+ */
+const payerOf = (e: Entry): string => (e.settled !== undefined ? (e.paidBy ?? "") : e.addedBy);
+
 /* ---------- ダイアログ ---------- */
 
 /** 閉じる動きの最中かどうかと、動きが終わったときに呼ぶもの。BookScreen が渡す */
@@ -1195,12 +1258,14 @@ const parseYen = (v: string): number => {
 function EditDialog({
   entry,
   categories,
+  me,
   onClose,
   onSave,
   onDelete,
 }: {
   entry: Entry;
   categories: Category[];
+  me: string;
   onClose: () => void;
   onSave: (e: NewEntry) => void;
   onDelete: () => void;
@@ -1210,6 +1275,10 @@ function EditDialog({
   const [catId, setCatId] = useState(current.id);
   const [date, setDate] = useState(entry.date);
   const [memo, setMemo] = useState(entry.memo);
+  const [pay, setPay] = useState<Pay>(payOf(entry));
+  // 相手の記録は相手の名前で、自分の記録は「自分で」と書く
+  const payer = payerOf(entry);
+  const who = payer === me ? "自分で払った" : `${payer || "名前なし"}が払った`;
   const amount = parseYen(amountText);
   const valid = amount >= 1 && amount <= AMOUNT_MAX;
   // 隠したカテゴリの記録でも、そのカテゴリのまま直せるようにする
@@ -1221,7 +1290,15 @@ function EditDialog({
         className="fields"
         onSubmit={(e) => {
           e.preventDefault();
-          if (valid) onSave({ amount, categoryId: catId, date, memo: cleanText(memo, MEMO_MAX) });
+          if (!valid) return;
+          onSave({
+            amount,
+            categoryId: catId,
+            date,
+            memo: cleanText(memo, MEMO_MAX),
+            // 変えたときだけ書く
+            ...(pay !== payOf(entry) ? { pay } : {}),
+          });
         }}
       >
         <label>
@@ -1253,6 +1330,14 @@ function EditDialog({
           <span>メモ</span>
           <input value={memo} maxLength={MEMO_MAX} onChange={(e) => setMemo(e.target.value)} autoComplete="off" />
         </label>
+        <label>
+          <span>払った財布</span>
+          <select value={pay} onChange={(e) => setPay(e.target.value as Pay)}>
+            <option value="shared">共通の財布</option>
+            <option value="unsettled">{who}・未精算</option>
+            <option value="settled">{who}・精算済み</option>
+          </select>
+        </label>
         {entry.addedBy && <p className="muted">記録した人: {entry.addedBy}</p>}
         <div className="row end">
           <button className="btn danger-ghost" type="button" onClick={onDelete}>
@@ -1267,11 +1352,67 @@ function EditDialog({
   );
 }
 
+/** 自分の財布で払って、まだ共通の財布から返していない記録。払った人ごとに並べる */
+function UnsettledDialog({
+  entries,
+  categories,
+  colorOf,
+  onClose,
+  onSettle,
+}: {
+  entries: Entry[];
+  categories: Category[];
+  colorOf: (id: string) => string;
+  onClose: () => void;
+  onSettle: (entries: Entry[]) => void;
+}) {
+  const people = unsettledByPerson(entries);
+  return (
+    <Dialog title="未精算" onClose={onClose}>
+      <div className="fields">
+        {people.length === 0 && <p className="muted">未精算の記録はありません</p>}
+        {people.map((p) => (
+          <section key={p.name} className="unsettled-person">
+            <h3>
+              <span>{p.name || "名前なし"}に返す</span>
+              <span>{yen(p.total)}</span>
+            </h3>
+            <ul className="entries">
+              {p.entries.map((e) => (
+                <li key={e.id} className="unsettled-row">
+                  <span className={`dot ${colorOf(e.categoryId)}`} aria-hidden="true" />
+                  <span className="entry-main">
+                    <span className="entry-cat">{categoryOf(e.categoryId, categories).name}</span>
+                    <span className="entry-sub">{[dateLabel(e.date), e.memo].filter(Boolean).join("・")}</span>
+                  </span>
+                  <span className="entry-amount">{yen(e.amount)}</span>
+                  <button className="btn small" type="button" onClick={() => onSettle([e])}>
+                    精算した
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {p.entries.length > 1 && (
+              <button className="btn primary wide" type="button" onClick={() => onSettle(p.entries)}>
+                {yen(p.total)} をまとめて精算した
+              </button>
+            )}
+          </section>
+        ))}
+        <p className="muted small">
+          記録画面で「自分で払った」を選んだ記録です。共通の財布から返したら「精算した」を押します。
+        </p>
+      </div>
+    </Dialog>
+  );
+}
+
 function MenuDialog({
   me,
   onMe,
   onClose,
   onToast,
+  onUnsettled,
   onBudget,
   onCategories,
 }: {
@@ -1279,6 +1420,7 @@ function MenuDialog({
   onMe: (v: string) => void;
   onClose: () => void;
   onToast: (m: string) => void;
+  onUnsettled: () => void;
   onBudget: () => void;
   onCategories: () => void;
 }) {
@@ -1315,6 +1457,9 @@ function MenuDialog({
   return (
     <Dialog title="メニュー" onClose={onClose}>
       <div className="fields">
+        <button className="btn wide" type="button" onClick={onUnsettled}>
+          未精算
+        </button>
         <button className="btn wide" type="button" onClick={onBudget}>
           月の予算
         </button>
@@ -1381,12 +1526,15 @@ function BudgetDialog({
   currentByCategory: ReadonlyMap<string, number>;
   colorOf: (id: string) => string;
   onClose: () => void;
-  /** changed は、額が変わったカテゴリだけ（0 は「決めない」） */
-  onSave: (amount: number, changed: { id: string; amount: number }[]) => void;
+  /** amount は変えたときだけ（変えていなければ null）。changed は額を変えたカテゴリだけ。0 は「決めない」 */
+  onSave: (amount: number | null, changed: { id: string; amount: number }[]) => void;
 }) {
-  const [text, setText] = useState(current ? String(current) : "");
+  // 比べる相手は、開いた時点の額に固める。開いている間に予算が届いたり相手が変えたりしても、
+  // 自分が触っていない欄を、欄に残った古い値で上書きしないため
+  const [base] = useState(() => ({ amount: current ?? 0, byCategory: new Map(currentByCategory) }));
+  const [text, setText] = useState(base.amount ? String(base.amount) : "");
   const [catText, setCatText] = useState<Record<string, string>>(() =>
-    Object.fromEntries([...currentByCategory].map(([id, v]) => [id, String(v)])),
+    Object.fromEntries([...base.byCategory].map(([id, v]) => [id, String(v)])),
   );
   const amount = parseYen(text);
   const valid = amount <= BUDGET_MAX;
@@ -1399,11 +1547,11 @@ function BudgetDialog({
         onSubmit={(e) => {
           e.preventDefault();
           if (!valid || !catsValid) return;
-          // 今効いている額（前の月から引き継いだ分を含む）と比べ、変わった分だけ書く
+          // 開いた時点で効いていた額（前の月から引き継いだ分を含む）と比べ、変えた分だけ書く
           const changed = categories
             .map((c) => ({ id: c.id, amount: catAmount(c.id) }))
-            .filter((c) => c.amount !== (currentByCategory.get(c.id) ?? 0));
-          onSave(amount, changed);
+            .filter((c) => c.amount !== (base.byCategory.get(c.id) ?? 0));
+          onSave(amount !== base.amount ? amount : null, changed);
         }}
       >
         <label>

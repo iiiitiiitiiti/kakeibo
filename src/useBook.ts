@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   collection,
+  deleteField,
   deleteDoc,
   doc,
   limit,
@@ -30,6 +31,7 @@ import {
   type CategoryBudget,
   type Category,
   type Entry,
+  type Pay,
 } from "./model";
 
 export type LoadState = "loading" | "ready" | "denied" | "offline-timeout";
@@ -46,6 +48,9 @@ function toEntry(id: string, d: DocumentData, pending: boolean): Entry {
     addedBy: typeof d.addedBy === "string" ? d.addedBy : "",
     createdAt: toMillis(d.createdAt),
     pending,
+    ...(typeof d.settled === "boolean"
+      ? { settled: d.settled, paidBy: typeof d.paidBy === "string" ? d.paidBy : "" }
+      : {}),
   };
 }
 
@@ -68,6 +73,8 @@ export interface NewEntry {
   categoryId: string;
   date: string;
   memo: string;
+  /** どの財布で払ったか。書かなければ、足すときは共通の財布、直すときは今のまま */
+  pay?: Pay;
 }
 
 /** 2人で共有する家計簿を購読し、書き込み操作を返す。month は「今月」画面で見ている月 */
@@ -77,6 +84,7 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
   const [storedCats, setStoredCats] = useState<Category[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([]);
+  const [unsettled, setUnsettled] = useState<Entry[]>([]);
   const [state, setState] = useState<LoadState>("loading");
   /** 保存先の今の中身を一度でも受け取ったか（手元の写しだけではない） */
   const [synced, setSynced] = useState(false);
@@ -145,12 +153,20 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
         ),
       (e) => console.error("カテゴリごとの予算を読めませんでした", e),
     );
+    // 未精算は月をまたいで残るので、月の記録とは別に全部を追う。読めなくても家計簿は使える
+    const unUnsettled = onSnapshot(
+      query(refs.entries, where("settled", "==", false)),
+      { includeMetadataChanges: true },
+      (snap) => setUnsettled(snap.docs.map(docToEntry)),
+      (e) => console.error("未精算の記録を読めませんでした", e),
+    );
     return () => {
       window.clearTimeout(timer);
       unRecent();
       unCats();
       unBudgets();
       unCatBudgets();
+      unUnsettled();
     };
   }, [refs]);
 
@@ -163,8 +179,9 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
       { includeMetadataChanges: true },
       (snap) => {
         setMonthEntries(snap.docs.map(docToEntry));
-        // 手元の写しが空なだけでは「記録なし」と決めない（電波が無い所で、見たことのない月を開いたとき）
-        setLoadedMonth(snap.metadata.fromCache && snap.empty ? null : month);
+        // 手元の写しが空なだけでは「記録なし」と決めない（電波が無い所で、見たことのない月を開いたとき）。
+        // 一度読み終えた月は、あとで電波が切れても読み終えたままにする
+        setLoadedMonth((prev) => (snap.metadata.fromCache && snap.empty && prev !== month ? null : month));
       },
       (e) => console.error("その月の記録を読めませんでした", e),
     );
@@ -192,11 +209,13 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
             memo: e.memo,
             addedBy: me,
             createdAt: serverTimestamp(),
+            ...(e.pay && e.pay !== "shared" ? { paidBy: me, settled: e.pay === "settled" } : {}),
           }),
         );
         return ref.id;
       },
-      update(id: string, e: NewEntry) {
+      /** paidBy は、自分の財布で払ったことにするときの払った人（前からそうなら元の人のまま渡す） */
+      update(id: string, e: NewEntry, paidBy: string) {
         guard(
           updateDoc(doc(refs.entries, id), {
             amount: e.amount,
@@ -204,8 +223,20 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
             date: e.date,
             memo: e.memo,
             updatedAt: serverTimestamp(),
+            ...(e.pay === undefined
+              ? {}
+              : e.pay === "shared"
+                ? { paidBy: deleteField(), settled: deleteField() }
+                : { paidBy, settled: e.pay === "settled" }),
           }),
         );
+      },
+      /** 未精算の記録をまとめて精算済みにする（false で未精算に戻す） */
+      setSettled(ids: readonly string[], settled: boolean) {
+        if (ids.length === 0) return;
+        const batch = writeBatch(refs.db);
+        for (const id of ids) batch.update(doc(refs.entries, id), { settled, updatedAt: serverTimestamp() });
+        guard(batch.commit());
       },
       remove(id: string) {
         guard(deleteDoc(doc(refs.entries, id)));
@@ -220,6 +251,7 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
             memo: e.memo,
             addedBy: e.addedBy,
             createdAt: Timestamp.fromMillis(e.createdAt),
+            ...(e.settled === undefined ? {} : { paidBy: e.paidBy ?? "", settled: e.settled }),
           }),
         );
       },
@@ -261,6 +293,7 @@ export function useBook(bookKey: string, month: string, me: string, onWriteError
     categories,
     budgets,
     categoryBudgets,
+    unsettled,
     ...actions,
   };
 }

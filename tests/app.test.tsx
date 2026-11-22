@@ -50,6 +50,7 @@ const makeBook = (over: Record<string, unknown> = {}) => ({
   categories: mergeCategories([]),
   budgets: [{ month: "2026-11", amount: 100000 }],
   categoryBudgets: [] as { month: string; categoryId: string; amount: number }[],
+  unsettled: [] as Entry[],
   add: vi.fn(() => "new-id"),
   update: vi.fn(),
   remove: vi.fn(),
@@ -59,6 +60,7 @@ const makeBook = (over: Record<string, unknown> = {}) => ({
   addCategory: vi.fn(() => "cat-id"),
   setBudget: vi.fn(),
   setCategoryBudget: vi.fn(),
+  setSettled: vi.fn(),
   ...over,
 });
 
@@ -237,6 +239,139 @@ describe("記録する", () => {
   });
 });
 
+describe("未精算", () => {
+  const showModal = () => {
+    HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    };
+    window.matchMedia ??= (() => ({ matches: false })) as unknown as typeof window.matchMedia;
+  };
+
+  it("「自分で払った」を選んで記録すると未精算になり、次の記録では元に戻る", async () => {
+    const book = render();
+    await type(["9", "0", "0"]);
+    await pick(".cat-select select", "food");
+    expect($(".pay-toggle").getAttribute("aria-pressed")).toBe("false");
+    await click($(".pay-toggle"));
+    expect($(".pay-toggle").getAttribute("aria-pressed")).toBe("true");
+    await click($(".submit"));
+
+    expect(book.add).toHaveBeenCalledWith({ amount: 900, categoryId: "food", date: "2026-11-22", memo: "", pay: "unsettled" });
+    // 立て替えた分も共通の出費として残りから引く
+    expect($(".toast").textContent).toContain("食費 ¥900 を未精算で記録");
+    expect($(".toast").textContent).toContain("今月の残り ¥69,100");
+    expect($(".pay-toggle").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("未精算の記録に印を付け、今月の画面に合計の入口を出す", async () => {
+    const mine = entry({ id: "u1", amount: 1200, settled: false, paidBy: "たろう" });
+    render(makeBook({ recent: [mine, entry({ id: "s1", settled: true, paidBy: "たろう" }), entry({ id: "n1" })], unsettled: [mine] }));
+    const tags = [...document.querySelectorAll(".recent li")].map((li) => li.querySelector(".unsettled-tag")?.textContent ?? "");
+    expect(tags).toEqual(["未精算", "", ""]);
+
+    await click(document.querySelectorAll(".tabs button")[1]);
+    expect($(".unsettled-link").textContent).toBe("未精算¥1,200");
+  });
+
+  it("未精算が無ければ、今月の画面に入口を出さない", async () => {
+    render();
+    await click(document.querySelectorAll(".tabs button")[1]);
+    expect(document.querySelector(".unsettled-link")).toBeNull();
+  });
+
+  it("払った人ごとに並べ、まとめても1件ずつも精算済みにできる。元にも戻せる", async () => {
+    showModal();
+    const list = [
+      entry({ id: "a", amount: 1000, date: "2026-11-20", settled: false, paidBy: "たろう" }),
+      entry({ id: "b", amount: 500, date: "2026-10-30", settled: false, paidBy: "たろう" }),
+      entry({ id: "c", amount: 800, settled: false, paidBy: "はなこ" }),
+    ];
+    const book = render(makeBook({ unsettled: list }));
+    const open = async () => {
+      await click(document.querySelectorAll(".tabs button")[1]);
+      await click($(".unsettled-link"));
+    };
+    await open();
+    const people = [...document.querySelectorAll(".unsettled-person")];
+    expect(people.map((p) => p.querySelector("h3")!.textContent)).toEqual(["たろうに返す¥1,500", "はなこに返す¥800"]);
+    // 古い日付から並べる
+    expect([...people[0].querySelectorAll(".entry-sub")].map((x) => x.textContent)).toEqual(["10月30日(金)", "11月20日(金)"]);
+    // 1件しか無い人には「まとめて」を出さない
+    expect(people[1].querySelector(".btn.primary")).toBeNull();
+
+    await click(people[0].querySelector(".btn.primary")!);
+    expect(book.setSettled).toHaveBeenLastCalledWith(["b", "a"], true);
+    await act(() => vi.advanceTimersByTime(300));
+    expect(document.querySelector("dialog")).toBeNull();
+    expect($(".toast").textContent).toContain("¥1,500 を精算済みにしました");
+    await click($(".toast button"));
+    expect(book.setSettled).toHaveBeenLastCalledWith(["b", "a"], false);
+
+    await click($(".unsettled-link"));
+    await click(document.querySelectorAll(".unsettled-person")[1].querySelector(".unsettled-row .btn")!);
+    expect(book.setSettled).toHaveBeenLastCalledWith(["c"], true);
+  });
+
+  it("記録を直す画面で払った財布を変えられる。相手が払った分は相手の名前のまま", async () => {
+    showModal();
+    const theirs = entry({ id: "t", amount: 700, settled: false, paidBy: "はなこ" });
+    const shared = entry({ id: "n", amount: 300, addedBy: "たろう" });
+    const forgotten = entry({ id: "f", amount: 400, addedBy: "はなこ" });
+    const book = render(makeBook({ recent: [theirs, shared, forgotten], unsettled: [theirs] }));
+    const rows = () => [...document.querySelectorAll<HTMLElement>(".recent .entry")];
+    const paySelect = () => [...document.querySelectorAll<HTMLSelectElement>("dialog select")].at(-1)!;
+    const choose = (value: string) =>
+      act(() => {
+        const el = paySelect();
+        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(el, value);
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+
+    await click(rows()[0]);
+    expect([...paySelect().options].map((o) => o.textContent)).toEqual([
+      "共通の財布",
+      "はなこが払った・未精算",
+      "はなこが払った・精算済み",
+    ]);
+    expect(paySelect().value).toBe("unsettled");
+    await choose("settled");
+    await act(() => $<HTMLFormElement>("dialog form").requestSubmit());
+    expect(book.update).toHaveBeenLastCalledWith(
+      "t",
+      { amount: 700, categoryId: "food", date: "2026-11-22", memo: "", pay: "settled" },
+      "はなこ",
+    );
+    await act(() => vi.advanceTimersByTime(300));
+
+    // 共通の財布の記録を、あとから自分で払ったことにする。変えなければ財布のことは書かない
+    await click(rows()[1]);
+    expect(paySelect().options[1].textContent).toBe("自分で払った・未精算");
+    await act(() => $<HTMLFormElement>("dialog form").requestSubmit());
+    expect(book.update).toHaveBeenLastCalledWith("n", { amount: 300, categoryId: "food", date: "2026-11-22", memo: "" }, "たろう");
+    await act(() => vi.advanceTimersByTime(300));
+    await click(rows()[1]);
+    await choose("unsettled");
+    await act(() => $<HTMLFormElement>("dialog form").requestSubmit());
+    expect(book.update).toHaveBeenLastCalledWith(
+      "n",
+      { amount: 300, categoryId: "food", date: "2026-11-22", memo: "", pay: "unsettled" },
+      "たろう",
+    );
+    await act(() => vi.advanceTimersByTime(300));
+
+    // 相手が付け忘れた記録をこちらで未精算にしても、払った人は記録した相手
+    await click(rows()[2]);
+    expect(paySelect().options[1].textContent).toBe("はなこが払った・未精算");
+    await choose("unsettled");
+    await act(() => $<HTMLFormElement>("dialog form").requestSubmit());
+    expect(book.update).toHaveBeenLastCalledWith(
+      "f",
+      { amount: 400, categoryId: "food", date: "2026-11-22", memo: "", pay: "unsettled" },
+      "はなこ",
+    );
+  });
+});
+
 describe("届いた記録", () => {
   it("開いたあとに届いた記録だけ色を付ける", async () => {
     const first = entry({ id: "e1", createdAt: 1 });
@@ -373,6 +508,27 @@ describe("今月", () => {
       ["2026-11", "eatout", 12000],
     ]);
     expect($(".toast").textContent).toContain("カテゴリの予算を保存しました");
+  });
+
+  it("予算の画面を開いたあとで予算が届いても、触っていない欄を空で上書きしない", async () => {
+    HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    };
+    window.matchMedia ??= (() => ({ matches: false })) as unknown as typeof window.matchMedia;
+    const first = render(makeBook({ budgets: [] }));
+    await click($('[aria-label="メニュー"]'));
+    await click([...document.querySelectorAll("dialog button")].find((b) => b.textContent!.includes("月の予算"))!);
+    // 開いている間に、全体の予算とカテゴリの予算が届く（相手が決めた）
+    const late = makeBook({
+      budgets: [{ month: "2026-11", amount: 100000 }],
+      categoryBudgets: [{ month: "2026-11", categoryId: "food", amount: 40000 }],
+    });
+    await act(() => store.set(late));
+    await act(() => $<HTMLFormElement>("dialog form").requestSubmit());
+    for (const b of [first, late]) {
+      expect(b.setBudget).not.toHaveBeenCalled();
+      expect(b.setCategoryBudget).not.toHaveBeenCalled();
+    }
   });
 
   it("カレンダーで選んだ日から「この日に記録する」を押すと、その日付で記録画面が開く", async () => {

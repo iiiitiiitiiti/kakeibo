@@ -22,6 +22,44 @@ export interface Entry {
   createdAt: number;
   /** まだ保存先に届いていない（電波が無い所で書いた） */
   pending?: boolean;
+  /**
+   * 共通の財布でなく自分の財布で払った記録だけが持つ。false の間は未精算（共通の財布から返してもらう前）。
+   * 共通の財布で払った記録は持たない
+   */
+  settled?: boolean;
+  /** 自分の財布で払った人の呼び名（settled を持つ記録だけ。呼び名を決めていなければ空） */
+  paidBy?: string;
+}
+
+/** どの財布で払ったか。shared は共通の財布、あとの2つは自分の財布（返してもらう前・返してもらった後） */
+export type Pay = "shared" | "unsettled" | "settled";
+
+export const payOf = (e: Pick<Entry, "settled">): Pay =>
+  e.settled === undefined ? "shared" : e.settled ? "settled" : "unsettled";
+
+export interface PersonUnsettled {
+  /** 払った人の呼び名（決めていなければ空） */
+  name: string;
+  total: number;
+  /** 日付の古い順 */
+  entries: Entry[];
+}
+
+/** 未精算の記録を払った人ごとにまとめる（額の多い人から） */
+export function unsettledByPerson(entries: readonly Entry[]): PersonUnsettled[] {
+  const map = new Map<string, PersonUnsettled>();
+  for (const e of entries) {
+    if (e.settled !== false) continue;
+    const name = e.paidBy ?? "";
+    const p = map.get(name) ?? { name, total: 0, entries: [] };
+    p.total += e.amount;
+    p.entries.push(e);
+    map.set(name, p);
+  }
+  for (const p of map.values()) {
+    p.entries.sort((a, b) => (a.date === b.date ? a.createdAt - b.createdAt : a.date < b.date ? -1 : 1));
+  }
+  return [...map.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, "ja"));
 }
 
 export interface Category {
