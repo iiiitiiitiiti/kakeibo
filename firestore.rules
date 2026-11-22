@@ -16,14 +16,17 @@ service cloud.firestore {
     // 上限は src/model.ts の AMOUNT_MAX・MEMO_MAX・PERSON_MAX と揃える（tests/rules.test.ts が確かめる）
     function validEntry(d) {
       return d.keys().hasAll(["amount", "categoryId", "date", "createdAt"])
-        && d.keys().hasOnly(["amount", "categoryId", "date", "memo", "addedBy", "createdAt", "updatedAt"])
+        && d.keys().hasOnly(["amount", "categoryId", "date", "memo", "addedBy", "createdAt", "updatedAt", "paidBy", "settled"])
         && d.amount is int && d.amount >= 1 && d.amount <= 9999999
         && shortString(d.categoryId, 1, 40)
         && d.date is string && d.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && (!("memo" in d) || shortString(d.memo, 0, 40))
         && (!("addedBy" in d) || shortString(d.addedBy, 0, 20))
         && d.createdAt is timestamp
-        && (!("updatedAt" in d) || d.updatedAt is timestamp);
+        && (!("updatedAt" in d) || d.updatedAt is timestamp)
+        // 共通の財布でなく自分の財布で払った記録だけが持つ。settled が false の間は未精算
+        && (!("paidBy" in d) || shortString(d.paidBy, 0, 20))
+        && (!("settled" in d) || d.settled is bool);
     }
 
     // 上限は src/model.ts の CAT_NAME_MAX と揃える
