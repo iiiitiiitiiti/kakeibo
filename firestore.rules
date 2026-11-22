@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// 家計簿は books/{鍵} の下に置く。鍵そのものはリポに載せず、SHA-256 のハッシュだけを照合する。
+// books の一覧取得や collectionGroup の照会は、下の match に当たらないので拒否される。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isOurBook(key) {
+      return hashing.sha256(key).toHexString().lower()
+        == "d661b9e6d31df024f67ea212228c985b7314955853208269583fa02cd855ef4b";
+    }
+
+    function shortString(v, min, max) {
+      return v is string && v.size() >= min && v.size() <= max;
+    }
+
+    // 上限は src/model.ts の AMOUNT_MAX・MEMO_MAX・PERSON_MAX と揃える（tests/rules.test.ts が確かめる）
+    function validEntry(d) {
+      return d.keys().hasAll(["amount", "categoryId", "date", "createdAt"])
+        && d.keys().hasOnly(["amount", "categoryId", "date", "memo", "addedBy", "createdAt", "updatedAt"])
+        && d.amount is int && d.amount >= 1 && d.amount <= 9999999
+        && shortString(d.categoryId, 1, 40)
+        && d.date is string && d.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (!("memo" in d) || shortString(d.memo, 0, 40))
+        && (!("addedBy" in d) || shortString(d.addedBy, 0, 20))
+        && d.createdAt is timestamp
+        && (!("updatedAt" in d) || d.updatedAt is timestamp);
+    }
+
+    // 上限は src/model.ts の CAT_NAME_MAX と揃える
+    function validCategory(d) {
+      return d.keys().hasAll(["name", "order", "hidden"])
+        && d.keys().hasOnly(["name", "order", "hidden"])
+        && shortString(d.name, 1, 12)
+        && d.order is number
+        && d.hidden is bool;
+    }
+
+    // 上限は src/model.ts の BUDGET_MAX と揃える
+    function validBudget(d) {
+      return d.keys().hasAll(["amount"]) && d.keys().hasOnly(["amount"])
+        && d.amount is int && d.amount >= 0 && d.amount <= 99999999;
+    }
+
+    match /books/{key}/entries/{entryId} {
+      allow read, delete: if isOurBook(key);
+      allow create, update: if isOurBook(key) && validEntry(request.resource.data);
+    }
+
+    // カテゴリは消さずに隠す（過去の記録の名前を保つため）
+    match /books/{key}/categories/{catId} {
+      allow read: if isOurBook(key);
+      allow create, update: if isOurBook(key) && catId.size() <= 40 && validCategory(request.resource.data);
+    }
+
+    // 月ごとの予算。文書 ID は YYYY-MM
+    match /books/{key}/budgets/{month} {
+      allow read: if isOurBook(key);
+      allow create, update: if isOurBook(key) && month.matches('^[0-9]{4}-(0[1-9]|1[0-2])$')
+        && validBudget(request.resource.data);
+    }
+  }
+}

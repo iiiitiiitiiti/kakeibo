@@ -1,0 +1,138 @@
+import { describe, expect, it } from "vitest";
+import {
+  addMonths,
+  budgetFor,
+  categoryOf,
+  DEFAULT_CATEGORIES,
+  groupByDate,
+  localDate,
+  mergeCategories,
+  monthRange,
+  nextOrder,
+  OTHER_ID,
+  pushDigit,
+  totalsByCategory,
+  yen,
+  type Entry,
+} from "../src/model";
+
+const entry = (p: Partial<Entry>): Entry => ({
+  id: Math.random().toString(36),
+  amount: 100,
+  categoryId: "food",
+  date: "2026-11-22",
+  memo: "",
+  addedBy: "",
+  createdAt: 0,
+  ...p,
+});
+
+describe("localDate", () => {
+  it("端末の時刻で日付を作る（世界時にしない）", () => {
+    // 日本の朝7時は世界時では前日の22時
+    const d = new Date(2026, 10, 22, 7, 0);
+    expect(localDate(d)).toBe("2026-11-22");
+  });
+});
+
+describe("addMonths / monthRange", () => {
+  it("年をまたぐ", () => {
+    expect(addMonths("2026-01", -1)).toBe("2025-12");
+    expect(addMonths("2026-12", 1)).toBe("2027-01");
+  });
+  it("月の範囲は日付の文字列で比べられる", () => {
+    const [from, to] = monthRange("2026-02");
+    expect("2026-02-28" >= from && "2026-02-28" <= to).toBe(true);
+    expect("2026-03-01" <= to).toBe(false);
+  });
+});
+
+describe("budgetFor", () => {
+  const budgets = [
+    { month: "2026-10", amount: 150000 },
+    { month: "2027-01", amount: 180000 },
+  ];
+  it("その月以前で一番新しい予算を使う", () => {
+    expect(budgetFor("2026-12", budgets)).toBe(150000);
+    expect(budgetFor("2027-03", budgets)).toBe(180000);
+  });
+  it("決めた月より前は予算なし", () => {
+    expect(budgetFor("2026-09", budgets)).toBeNull();
+  });
+  it("0 は決めていない扱い", () => {
+    expect(budgetFor("2027-02", [...budgets, { month: "2027-02", amount: 0 }])).toBeNull();
+  });
+});
+
+describe("mergeCategories", () => {
+  it("保存先が空なら最初の7種、その他が最後", () => {
+    const cats = mergeCategories([]);
+    expect(cats.map((c) => c.id)).toEqual(DEFAULT_CATEGORIES.map((c) => c.id));
+    expect(cats.at(-1)!.id).toBe(OTHER_ID);
+  });
+  it("同じ ID の文書で名前や隠すを上書きし、足した分を並べる", () => {
+    const cats = mergeCategories([
+      { id: "food", name: "食材", order: 10, hidden: false },
+      { id: "rent", name: "家賃", order: 40, hidden: true },
+      { id: "abc", name: "趣味", order: 70, hidden: false },
+    ]);
+    expect(cats.find((c) => c.id === "food")!.name).toBe("食材");
+    expect(cats.find((c) => c.id === "rent")!.hidden).toBe(true);
+    expect(cats.map((c) => c.id).indexOf("abc")).toBe(cats.length - 2);
+  });
+  it("全部隠したらその他を出す", () => {
+    const cats = mergeCategories(DEFAULT_CATEGORIES.map((c) => ({ ...c, hidden: true })));
+    expect(cats.filter((c) => !c.hidden).map((c) => c.id)).toEqual([OTHER_ID]);
+  });
+  it("見つからないカテゴリの記録はその他", () => {
+    expect(categoryOf("gone", mergeCategories([])).id).toBe(OTHER_ID);
+  });
+  it("新しいカテゴリはその他の前", () => {
+    const cats = mergeCategories([]);
+    expect(nextOrder(cats)).toBe(70);
+    expect(nextOrder(cats)).toBeLessThan(1000);
+  });
+});
+
+describe("pushDigit", () => {
+  it("先頭の0は打てない", () => {
+    expect(pushDigit("", "0")).toBe("");
+    expect(pushDigit("", "00")).toBe("");
+  });
+  it("00 で桁が増える", () => {
+    expect(pushDigit("12", "00")).toBe("1200");
+  });
+  it("上限を超える桁は受け付けない", () => {
+    expect(pushDigit("9999999", "1")).toBe("9999999");
+  });
+});
+
+describe("集計", () => {
+  const cats = mergeCategories([]);
+  const list = [
+    entry({ amount: 300, categoryId: "food", date: "2026-11-01", createdAt: 1 }),
+    entry({ amount: 1000, categoryId: "eatout", date: "2026-11-02", createdAt: 2 }),
+    entry({ amount: 200, categoryId: "food", date: "2026-11-02", createdAt: 3 }),
+    entry({ amount: 50, categoryId: "gone", date: "2026-11-02", createdAt: 4 }),
+  ];
+  it("カテゴリ別は多い順、消えたカテゴリはその他にまとめる", () => {
+    const t = totalsByCategory(list, cats);
+    expect(t.map((x) => [x.category.id, x.total])).toEqual([
+      ["eatout", 1000],
+      ["food", 500],
+      [OTHER_ID, 50],
+    ]);
+  });
+  it("日付ごとは新しい日が先、日の合計つき", () => {
+    const days = groupByDate(list);
+    expect(days.map((d) => [d.date, d.total])).toEqual([
+      ["2026-11-02", 1250],
+      ["2026-11-01", 300],
+    ]);
+    expect(days[0].entries[0].createdAt).toBe(4);
+  });
+  it("円の表示", () => {
+    expect(yen(1234567)).toBe("¥1,234,567");
+    expect(yen(-500)).toBe("−¥500");
+  });
+});
