@@ -12,7 +12,10 @@ import {
   monthRange,
   nextOrder,
   OTHER_ID,
-  pushDigit,
+  calcPress,
+  evaluate,
+  formatExpr,
+  type CalcKey,
   totalsByCategory,
   yen,
   type Entry,
@@ -96,16 +99,42 @@ describe("mergeCategories", () => {
   });
 });
 
-describe("pushDigit", () => {
-  it("先頭の0は打てない", () => {
-    expect(pushDigit("", "0")).toBe("");
-    expect(pushDigit("", "00")).toBe("");
+describe("電卓", () => {
+  const press = (...keys: CalcKey[]) => keys.reduce((e, k) => calcPress(e, k), "");
+  it("頭の0は付かない・00で桁が増える", () => {
+    expect(press("0", "0")).toBe("");
+    expect(press("1", "2", "00")).toBe("1200");
+    expect(press("5", "+", "0", "7")).toBe("5+7");
   });
-  it("00 で桁が増える", () => {
-    expect(pushDigit("12", "00")).toBe("1200");
+  it("記号は続けて押すと置き換わり、式の頭には置かない", () => {
+    expect(press("+")).toBe("");
+    expect(press("3", "+", "×")).toBe("3×");
   });
-  it("上限を超える桁は受け付けない", () => {
-    expect(pushDigit("9999999", "1")).toBe("9999999");
+  it("掛け算・割り算が先", () => {
+    expect(evaluate("100+200×3")).toBe(700);
+    expect(evaluate("1000−300÷3")).toBe(900);
+  });
+  it("割り切れないときは四捨五入、0で割ると null", () => {
+    expect(evaluate("1000÷3")).toBe(333);
+    expect(evaluate("1000÷0")).toBeNull();
+  });
+  it("最後の記号は無視する", () => {
+    expect(evaluate("1280+")).toBe(1280);
+  });
+  it("= で答えに置き換わる。0以下なら式のまま", () => {
+    expect(press("1", "2", "0", "0", "÷", "4", "=")).toBe("300");
+    expect(press("1", "−", "5", "=")).toBe("1−5");
+  });
+  it("1つの数は7桁まで", () => {
+    expect(press("9", "9", "9", "9", "9", "9", "9", "9")).toBe("9999999");
+    expect(press("9", "9", "9", "9", "9", "9", "9", "+", "1")).toBe("9999999+1");
+  });
+  it("1文字消す・全部消す", () => {
+    expect(press("1", "2", "+", "back")).toBe("12");
+    expect(press("1", "2", "C")).toBe("");
+  });
+  it("式の見せ方", () => {
+    expect(formatExpr("12800+1500×2")).toBe("12,800 + 1,500 × 2");
   });
 });
 

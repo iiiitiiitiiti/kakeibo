@@ -18,12 +18,18 @@ import {
   monthOf,
   nextOrder,
   PERSON_MAX,
-  pushDigit,
+  calcPress,
+  evaluate,
+  formatExpr,
+  hasOperator,
+  OPERATORS,
   shortYen,
   sum,
   totalsByCategory,
   yen,
+  type CalcKey,
   type Category,
+  type Operator,
   type Entry,
 } from "./model";
 import { useBook, type NewEntry } from "./useBook";
@@ -348,7 +354,25 @@ function colorClass(id: string): string {
 
 /* ---------- 記録 ---------- */
 
-const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "00", "0", "back"] as const;
+/** 電卓のキーの並び（4列）。「=」は2行ぶん、「0」は2列ぶんの高さ・幅を取る */
+const KEYS: readonly CalcKey[] = ["C", "÷", "×", "back", "7", "8", "9", "−", "4", "5", "6", "+", "1", "2", "3", "=", "0", "00"];
+const KEY_LABEL: Partial<Record<CalcKey, string>> = {
+  C: "全部消す",
+  back: "1文字消す",
+  "÷": "割る",
+  "×": "掛ける",
+  "−": "引く",
+  "+": "足す",
+  "=": "計算する",
+};
+
+function keyClass(k: CalcKey): string {
+  if (k === "=") return "key op eq";
+  if (k === "0") return "key wide";
+  if (k === "C" || k === "back") return "key fn";
+  if (OPERATORS.includes(k as Operator)) return "key op";
+  return "key";
+}
 
 function RecordTab({
   categories,
@@ -369,51 +393,77 @@ function RecordTab({
   onOpen: (e: Entry) => void;
   onEditCategories: () => void;
 }) {
-  const [digits, setDigits] = useState("");
+  const [expr, setExpr] = useState("");
   const [catId, setCatId] = useState<string | null>(null);
   const [date, setDate] = useState(localDate);
   const [memo, setMemo] = useState("");
-  const amount = digits ? Number(digits) : 0;
+  const value = evaluate(expr);
+  const amount = value ?? 0;
+  const amountOk = amount >= 1 && amount <= AMOUNT_MAX;
   // 選んでいたカテゴリが隠されたら選び直してもらう
   const chosen = catId && categories.some((c) => c.id === catId) ? catId : null;
-  const ready = amount > 0 && chosen !== null;
+  const ready = amountOk && chosen !== null;
 
-  const press = (key: (typeof KEYS)[number]) => {
-    if (key === "back") setDigits((d) => d.slice(0, -1));
-    else setDigits((d) => pushDigit(d, key));
+  const press = (key: CalcKey) => {
+    setExpr((e) => calcPress(e, key));
     navigator.vibrate?.(5);
   };
 
   const submit = () => {
     if (!ready || !chosen) return;
     onAdd({ amount, categoryId: chosen, date, memo: cleanText(memo, MEMO_MAX) });
-    setDigits("");
+    setExpr("");
     setCatId(null);
     setMemo("");
     setDate(localDate());
   };
 
+  const submitLabel =
+    expr === ""
+      ? "金額を打ってください"
+      : value === null
+        ? "計算できません（0で割っています）"
+        : amount < 1
+          ? "金額が0円以下です"
+          : amount > AMOUNT_MAX
+            ? `${yen(AMOUNT_MAX)}までにしてください`
+            : chosen === null
+              ? "カテゴリを選んでください"
+              : "記録する";
+
   return (
     <main className="record">
       <section className="entry-card" aria-label="記録する">
-        <output className={amount ? "amount" : "amount empty"} aria-live="polite" aria-label="金額">
-          {yen(amount)}
-        </output>
+        <div className="display">
+          <p className="expr" aria-hidden={!hasOperator(expr)}>
+            {hasOperator(expr) ? formatExpr(expr) : "\u00a0"}
+          </p>
+          <output
+            className={expr === "" ? "amount empty" : amountOk ? "amount" : "amount bad"}
+            aria-live="polite"
+            aria-label="金額"
+          >
+            {value === null ? "—" : yen(amount)}
+          </output>
+        </div>
 
-        <div className="cats" role="group" aria-label="カテゴリ">
-          {categories.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              className={`cat ${colorOf(c.id)}${chosen === c.id ? " on" : ""}`}
-              aria-pressed={chosen === c.id}
-              onClick={() => setCatId(chosen === c.id ? null : c.id)}
-            >
-              {c.name}
-            </button>
-          ))}
-          <button type="button" className="cat add" onClick={onEditCategories} aria-label="カテゴリを足す・直す">
-            ＋
+        <div className="cat-row">
+          <span className={`dot ${chosen ? colorOf(chosen) : "none"}`} aria-hidden="true" />
+          <label className="cat-select">
+            <span className="sr-only">カテゴリ</span>
+            <select value={chosen ?? ""} onChange={(e) => setCatId(e.target.value || null)}>
+              <option value="" disabled>
+                カテゴリを選ぶ
+              </option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="icon-btn" onClick={onEditCategories} aria-label="カテゴリを足す・直す">
+            <PlusIcon />
           </button>
         </div>
 
@@ -445,13 +495,13 @@ function RecordTab({
           </label>
         </div>
 
-        <div className="keypad" role="group" aria-label="金額を打つ">
+        <div className="keypad" role="group" aria-label="電卓">
           {KEYS.map((k) => (
             <button
               key={k}
               type="button"
-              className={k === "back" ? "key back" : "key"}
-              aria-label={k === "back" ? "1文字消す" : k}
+              className={keyClass(k)}
+              aria-label={KEY_LABEL[k] ?? k}
               onPointerDown={(e) => {
                 // 指が触れた瞬間に打つ（離すのを待つと速く打ったときに取りこぼす）
                 if (e.pointerType === "mouse" && e.button !== 0) return;
@@ -469,7 +519,7 @@ function RecordTab({
         </div>
 
         <button className="btn primary submit" type="button" disabled={!ready} onClick={submit}>
-          {amount === 0 ? "金額を打ってください" : chosen === null ? "カテゴリを選んでください" : "記録する"}
+          {submitLabel}
         </button>
       </section>
 
@@ -792,22 +842,16 @@ function EditDialog({
           />
           {!valid && <small className="error">1円から{yen(AMOUNT_MAX)}までで入れてください</small>}
         </label>
-        <fieldset>
-          <legend>カテゴリ</legend>
-          <div className="cats">
+        <label>
+          <span>カテゴリ</span>
+          <select value={catId} onChange={(e) => setCatId(e.target.value)}>
             {choices.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className={`cat${catId === c.id ? " on" : ""}`}
-                aria-pressed={catId === c.id}
-                onClick={() => setCatId(c.id)}
-              >
+              <option key={c.id} value={c.id}>
                 {c.name}
-              </button>
+              </option>
             ))}
-          </div>
-        </fieldset>
+          </select>
+        </label>
         <label>
           <span>日付</span>
           <input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} />
@@ -1147,6 +1191,11 @@ const MenuIcon = () => (
 const CloseIcon = () => (
   <svg viewBox="0 0 24 24" aria-hidden="true">
     <path d="M6 6l12 12M18 6L6 18" />
+  </svg>
+);
+const PlusIcon = () => (
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 5v14M5 12h14" />
   </svg>
 );
 const BackIcon = () => (

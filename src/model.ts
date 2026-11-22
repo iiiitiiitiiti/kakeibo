@@ -186,11 +186,77 @@ export const monthLabel = (month: string): string => {
   return `${y}年${m}月`;
 };
 
-/** 数字キーで打った文字列に1文字足す。上限を超える・先頭の0は受け付けない */
-export function pushDigit(current: string, key: string): string {
-  const next = current === "0" ? key.replace(/^0+/, "") : current + key;
-  if (next === "" || /^0+$/.test(next)) return "";
-  return Number(next) > AMOUNT_MAX ? current : next;
+/* ---------- 電卓 ---------- */
+
+export const OPERATORS = ["+", "−", "×", "÷"] as const;
+export type Operator = (typeof OPERATORS)[number];
+export type CalcKey = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "00" | Operator | "=" | "C" | "back";
+
+const isOp = (c: string): c is Operator => (OPERATORS as readonly string[]).includes(c);
+/** 1つの数の桁数の上限（金額の上限と同じ7桁） */
+const NUM_DIGITS = String(AMOUNT_MAX).length;
+
+/** 式を数と記号に分ける（"1200+300×2" → ["1200", "+", "300", "×", "2"]） */
+export function tokens(expr: string): string[] {
+  return expr.match(/\d+|[+−×÷]/g) ?? [];
+}
+
+/**
+ * 電卓のキーを1つ押したあとの式。
+ * 数の頭の0は付けない・記号は続けて押すと置き換える・式の頭に記号は置かない。
+ */
+export function calcPress(expr: string, key: CalcKey): string {
+  if (key === "C") return "";
+  if (key === "back") return expr.slice(0, -1);
+  if (key === "=") {
+    const v = evaluate(expr);
+    return v !== null && v > 0 ? String(v) : expr;
+  }
+  if (isOp(key)) {
+    if (expr === "") return "";
+    return isOp(expr.slice(-1)) ? expr.slice(0, -1) + key : expr + key;
+  }
+  const last = tokens(expr).at(-1) ?? "";
+  const current = isOp(last) ? "" : last;
+  const head = expr.slice(0, expr.length - current.length);
+  const next = (current + key).replace(/^0+/, "");
+  if (next.length > NUM_DIGITS) return expr;
+  return head + next;
+}
+
+/** 式の値（円・四捨五入）。最後が記号なら無視する。0で割るなど計算できなければ null */
+export function evaluate(expr: string): number | null {
+  const t = tokens(expr);
+  if (t.length && isOp(t[t.length - 1])) t.pop();
+  if (t.length === 0) return 0;
+  // 先に × ÷ をまとめる
+  const terms: number[] = [Number(t[0])];
+  const signs: Operator[] = [];
+  for (let i = 1; i < t.length; i += 2) {
+    const op = t[i] as Operator;
+    const n = Number(t[i + 1]);
+    if (op === "×") terms[terms.length - 1] *= n;
+    else if (op === "÷") {
+      if (n === 0) return null;
+      terms[terms.length - 1] /= n;
+    } else {
+      signs.push(op);
+      terms.push(n);
+    }
+  }
+  let v = terms[0];
+  signs.forEach((op, i) => (v = op === "+" ? v + terms[i + 1] : v - terms[i + 1]));
+  return Number.isFinite(v) ? Math.round(v) : null;
+}
+
+/** 式に記号が入っているか（入っていれば途中の式も見せる） */
+export const hasOperator = (expr: string): boolean => /[+−×÷]/.test(expr);
+
+/** 式を見やすく（数に3桁ごとのカンマ、記号の前後に空き） */
+export function formatExpr(expr: string): string {
+  return tokens(expr)
+    .map((t) => (isOp(t) ? ` ${t} ` : yenFmt.format(Number(t))))
+    .join("");
 }
 
 export function keyFromHash(hash: string): string | null {
