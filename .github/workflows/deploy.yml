@@ -50,3 +50,33 @@ jobs:
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # 公開が済んだら、何が変わったかを Discord に知らせる。
+  # 行き先（DISCORD_WEBHOOK_URL）を GitHub のシークレットに入れていなければ何もしない。
+  notify:
+    needs: deploy
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tell Discord what changed
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "DISCORD_WEBHOOK_URL が無いので知らせません"
+            exit 0
+          fi
+          # 使う人に関わる変更（feat・fix）の1行目だけを拾う。docs や chore だけの公開では知らせない
+          CHANGES=$(printf '%s' "$COMMITS" | jq -r '
+            [.[].message | split("\n")[0]
+              | select(test("^(feat|fix)(\\(.+\\))?: "))
+              | sub("^[a-z]+(\\(.+\\))?: "; "・")]
+            | .[:15] | join("\n")')
+          if [ -z "$CHANGES" ]; then
+            echo "使う人に関わる変更が無いので知らせません"
+            exit 0
+          fi
+          TEXT=$(printf 'かけいぼを更新しました\n%s\nアプリを一度閉じて開き直すと新しい版になります' "$CHANGES")
+          jq -n --arg content "$TEXT" '{content: $content[:1900], allowed_mentions: {parse: []}}' \
+            | curl -fsS -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK_URL" > /dev/null
