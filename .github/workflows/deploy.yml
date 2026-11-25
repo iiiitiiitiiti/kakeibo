@@ -51,36 +51,24 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-  # 公開が済んだら、何が変わったかを Discord に知らせる。
+  # 公開が済んだら、コミットの本文の「お知らせ: 〜」の行を Discord に知らせる（docs/decisions/005）。
   # 行き先（DISCORD_WEBHOOK_URL）を GitHub のシークレットに入れていなければ何もしない。
   notify:
     needs: deploy
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Tell Discord what changed
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           COMMITS: ${{ toJSON(github.event.commits) }}
-        run: |
-          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
-            echo "DISCORD_WEBHOOK_URL が無いので知らせません"
-            exit 0
-          fi
-          # 使う人に関わる変更（feat・fix）の1行目だけを拾う。docs や chore だけの公開では知らせない
-          # 件名の中の記号（* _ ~ ` | \）は、Discord に飾りとして読まれないよう逃がす
-          CHANGES=$(printf '%s' "$COMMITS" | jq -r '
-            [.[].message | split("\n")[0]
-              | select(test("^(feat|fix)(\\(.+\\))?: "))
-              | sub("^[a-z]+(\\(.+\\))?: "; "")
-              | gsub("(?<c>[\\\\*_~`|])"; "\\\(.c)")
-              | "- " + .]
-            | .[:15] | join("\n")')
-          if [ -z "$CHANGES" ]; then
-            echo "使う人に関わる変更が無いので知らせません"
-            exit 0
-          fi
-          # Discord の書式: 見出し・箇条書き・小さい文字の補足
-          TEXT=$(printf '## かけいぼを更新しました\n%s\n-# アプリを一度閉じて開き直すと新しい版になります' "$CHANGES")
-          jq -n --arg content "$TEXT" '{content: $content[:1900], allowed_mentions: {parse: []}}' \
-            | curl -fsS -H "Content-Type: application/json" -d @- "$DISCORD_WEBHOOK_URL" > /dev/null
+          GH_TOKEN: ${{ github.token }}
+          APP_NAME: かけいぼ
+          WORKFLOW_FILE: deploy.yml
+        run: bash .github/notify-discord.sh
